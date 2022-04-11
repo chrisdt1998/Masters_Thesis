@@ -51,6 +51,8 @@ output_dir = 'saved_numpys'
 device = 'find gpu device here'
 save_mask_all_iterations = True
 masking_threshold = 0.1 ## Not sure what number to put here
+dont_normalize_importance_by_layer = False
+dont_normalize_global_importance = False
 
 
 def entropy(p):
@@ -93,12 +95,14 @@ def compute_heads_importance(model, eval_dataloader, compute_entropy=True, compu
     labels = None
     tot_tokens = 0.0
     for step, batch in enumerate(tqdm(eval_dataloader, desc="Iteration", disable=local_rank not in [-1, 0])):
+        # TODO: Check what the batch contains in the dataloader, can probably remove input_ids.
         batch = tuple(t.to(device) for t in batch)
         input_ids, input_mask, segment_ids, label_ids = batch
 
         # Do a forward pass (not with torch.no_grad() since we need gradients for importance score - see below)
+        # TODO: Make sure head_mask is of the shape [num_hidden_layers x num_heads]
         outputs = model(
-            input_ids, token_type_ids=segment_ids, attention_mask=input_mask, labels=label_ids, head_mask=head_mask
+            pixel_values=input_ids, head_mask=head_mask
         )
         loss, logits, all_attentions = (
             outputs[0],
@@ -107,6 +111,7 @@ def compute_heads_importance(model, eval_dataloader, compute_entropy=True, compu
         )  # Loss and logits are the first, attention the last
         loss.backward()  # Backpropagate to populate the gradients in the head mask
 
+        # TODO: Does ViT give us 'all attentions'?
         if compute_entropy:
             for layer, attn in enumerate(all_attentions):
                 masked_entropy = entropy(attn.detach()) * input_mask.float().unsqueeze(1)
@@ -160,7 +165,7 @@ def compute_heads_importance(model, eval_dataloader, compute_entropy=True, compu
     return attn_entropy, head_importance, preds, labels
 
 
-def mask_heads(model, eval_dataloader):
+def mask_heads(model, eval_dataloader, masking_amount):
     """ This method shows how to mask head (set some heads to zero), to test the effect on the network,
         based on the head importance scores, as described in Michel et al. (http://arxiv.org/abs/1905.10650)
     """
@@ -189,8 +194,8 @@ def mask_heads(model, eval_dataloader):
         for head in current_heads_to_mask:
             if len(selected_heads_to_mask) == num_to_mask or head_importance.view(-1)[head.item()] == float("Inf"):
                 break
-            layer_idx = head.item() // model.bert.config.num_attention_heads
-            head_idx = head.item() % model.bert.config.num_attention_heads
+            layer_idx = head.item() // model.config.num_hidden_layers
+            head_idx = head.item() % model.config.num_attention_heads
             new_head_mask[layer_idx][head_idx] = 0.0
             selected_heads_to_mask.append(head.item())
 
@@ -219,12 +224,18 @@ def mask_heads(model, eval_dataloader):
     return head_mask
 
 def main():
-    output_dir = 'path/to/output'
-    device = 'put gpu device here, if gpu available'
+    # Setup devices and distributed training
+    if local_rank == -1 or no_cuda:
+        device = torch.device("cuda" if torch.cuda.is_available() and not no_cuda else "cpu")
+        n_gpu = 0 if no_cuda else torch.cuda.device_count()
+    else:
+        torch.cuda.set_device(local_rank)
+        device = torch.device("cuda", local_rank)
+        n_gpu = 1
+        torch.distributed.init_process_group(backend="nccl")  # Initializes the distributed backend
 
     try_masking = True
     use_train_data = True
-    masking_threshold = .1
     # Load pretrained model
     # Initializing a ViT vit-base-patch16-224 style configuration
     configuration = ViTConfig()
@@ -259,6 +270,7 @@ def main():
         compute_heads_importance(model, eval_dataloader)
 
     # Head masks needs to be dict of {layer_num: list of heads to prune in this layer} See base class PreTrainedModel
+    # When we finally have the mask, we can prune the heads and test performance speed gain.
     model._prune_heads(head_mask)
 
 if __name__ == "__main__":
