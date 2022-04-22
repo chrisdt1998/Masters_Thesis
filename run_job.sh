@@ -28,9 +28,10 @@ python3 -m pip install --user transformers
 python3 -m pip install --user datasets
 python3 -m pip install --user sklearn
 python3 -m pip install --user tensorboardX
+python3 -m pip install --user matplotlib
 
 
 
 ## Run code
-##srun python3 $HOME/tmp/pycharm_project_109/mask_head_vit_0.py
-srun python3 /rwthfs/rz/cluster/home/rs062004/tmp/pycharm_project_109/main.py --head_mask=saved_numpys/head_mask_1.npy --mask_heads
+#srun python3 /rwthfs/rz/cluster/home/rs062004/tmp/pycharm_project_109/mask_head_vit_3.py
+srun python3 /rwthfs/rz/cluster/home/rs062004/tmp/pycharm_project_109/main.py --head_mask=saved_numpys/head_mask_5.npy --mask_heads

@@ -9,10 +9,15 @@ parser.add_argument('--head_mask', type=str,
                     help='File name of numpy array containing head mask in shape num_layers x num_heads')
 parser.add_argument('--mask_heads', action="store_true",
                     help='Bool if to mask heads or not.')
+parser.add_argument('--use_initial_weights', action='store_true',
+                    help='If selected, weights will be initialized from vit-base-patch16-224-in21k and not from the'
+                         '100th step.')
+parser.add_argument('--dataset_name', type=str, default='cifar100',
+                    help='Name of dataset to be loaded from huggingface datasets. Default is cifar100.')
 args = parser.parse_args()
 
 print(f"args.mask_heads: {args.mask_heads} \n args.head_mask: {args.head_mask}")
-
+print(args)
 
 available_gpus = [torch.cuda.get_device_properties(torch.cuda.device(i)) for i in range(torch.cuda.device_count())]
 device_ids = [i for i in range(torch.cuda.device_count())]
@@ -21,17 +26,22 @@ for gpu in available_gpus:
         print(gpu)
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print('Device =', device)
-dataset_name = 'cifar100'
-# dataset_name = 'mnist
+# dataset_name = 'cifar100'
+# # dataset_name = 'mnist
+if args.use_initial_weights:
+    model_name = 'google/vit-base-patch16-224-in21k'
+else:
+    model_name = 'starting_checkpoint/checkpoint-100'
 
-if dataset_name == 'mnist':
-    feature_extractor = ViTFeatureExtractor.from_pretrained('google/vit-base-patch16-224-in21k', image_mean=0.5,
+
+if args.dataset_name == 'mnist':
+    feature_extractor = ViTFeatureExtractor.from_pretrained(model_name, image_mean=0.5,
                                                             image_std=0.5)
-elif dataset_name == 'cifar100':
-    feature_extractor = ViTFeatureExtractor.from_pretrained('google/vit-base-patch16-224-in21k')
+elif args.dataset_name == 'cifar100':
+    feature_extractor = ViTFeatureExtractor.from_pretrained(model_name)
 
 
-train_ds, test_ds = load_dataset(dataset_name, split=['train', 'test'])
+train_ds, test_ds = load_dataset(args.dataset_name, split=['train', 'test'])
 splits = train_ds.train_test_split(test_size=0.1)
 train_ds = splits['train']
 val_ds = splits['test']
@@ -43,7 +53,7 @@ print(feature_extractor)
 
 def transform(example_batch):
     # Take a list of PIL images and turn them to pixel values
-    if dataset_name == 'mnist':
+    if args.dataset_name == 'mnist':
         inputs = feature_extractor([x for x in example_batch['image']], return_tensors='pt')
         inputs['pixel_values'] = torch.stack([inputs['pixel_values'], inputs['pixel_values'], inputs['pixel_values']],
                                              dim=1)
@@ -51,7 +61,7 @@ def transform(example_batch):
         # Don't forget to include the labels!
         inputs['labels'] = example_batch['label']
 
-    elif dataset_name == 'cifar100':
+    elif args.dataset_name == 'cifar100':
         inputs = feature_extractor([x for x in example_batch['img']], return_tensors='pt')
 
         # Don't forget to include the labels!
@@ -85,14 +95,14 @@ def numpy_to_dict(head_mask):
 
 
 ## MNIST
-if dataset_name == 'mnist': labels = train_ds.features['label'].names
+if args.dataset_name == 'mnist': labels = train_ds.features['label'].names
 
 ## CIFAR
-if dataset_name == 'cifar100': labels = train_ds.features['fine_label'].names
+if args.dataset_name == 'cifar100': labels = train_ds.features['fine_label'].names
 
 
 model = ViTForImageClassification.from_pretrained(
-    'google/vit-base-patch16-224-in21k',
+    model_name,
     num_labels=len(labels),
     id2label={str(i): c for i, c in enumerate(labels)},
     label2id={c: str(i) for i, c in enumerate(labels)},
@@ -100,7 +110,6 @@ model = ViTForImageClassification.from_pretrained(
 
 
 head_mask = None
-print(f"args.mask_heads: {args.mask_heads} \n args.head_mask: {args.head_mask}")
 if args.mask_heads:
     head_mask = np.load(args.head_mask)
     print(f"Head masked {args.head_mask} loaded.")

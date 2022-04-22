@@ -23,7 +23,7 @@ min_importance = 0.1
 dont_normalize_importance_by_layer = False
 dont_normalize_global_importance = False
 dataset_name = 'cifar100'
-model_name = 'pruning_checkpoints/checkpoint-100'
+model_name = 'starting_checkpoint/checkpoint-100'
 
 no_cuda = False
 local_rank = -1
@@ -63,7 +63,7 @@ def compute_heads_importance(model, eval_dataloader, compute_importance=True, he
     preds = None
     labels = None
     tot_tokens = 14 * 14
-    for step, batch in enumerate(tqdm(eval_dataloader, desc="Iteration", disable=local_rank not in [-1, 0])):
+    for step, batch in enumerate(tqdm(eval_dataloader, desc="Iteration", disable=True)):
         input_ids = batch['pixel_values'].to(device)
         label_ids = batch['labels'].to(device)
 
@@ -162,6 +162,8 @@ def mask_heads(model_name, training_args, collate_fn, compute_metrics, transform
         if save_mask_all_iterations:
             np.save(os.path.join(output_dir, f"head_mask_{i}.npy"), head_mask.detach().cpu().numpy())
             np.save(os.path.join(output_dir, f"head_importance_{i}.npy"), head_importance.detach().cpu().numpy())
+            print(f"Iteration {i} score: {compute_score(preds, labels)}")
+            print(f"Iteration {i} head mask: \n {head_mask}")
         i += 1
         # heads from least important to most - keep only not-masked heads
         head_importance[head_mask == 0.0] = float("Inf")
@@ -169,6 +171,11 @@ def mask_heads(model_name, training_args, collate_fn, compute_metrics, transform
 
         if len(current_heads_to_mask) <= num_to_mask:
             print("Break 1", len(current_heads_to_mask), num_to_mask)
+            break
+
+        print(f"Number of heads left: {torch.sum(new_head_mask)}")
+        if torch.sum(new_head_mask) < 10:
+            print(f"Only {torch.sum(new_head_mask)} number of heads left causing the algorithm to stop searching.")
             break
 
         # mask heads
@@ -186,6 +193,8 @@ def mask_heads(model_name, training_args, collate_fn, compute_metrics, transform
             selected_heads_to_mask.append(head.item())
             print(f"Layer {layer_idx}, head number {head_idx} is pruned. Number of heads pruned is: {len(selected_heads_to_mask)}")
 
+
+
         if not running:
             break
 
@@ -197,9 +206,6 @@ def mask_heads(model_name, training_args, collate_fn, compute_metrics, transform
 
         # new_head_mask = new_head_mask.view_as(head_mask)
         print_2d_tensor(new_head_mask)
-
-        print(f"Iteration {i}, score {compute_score(preds, labels)}")
-        print(f"iter {i} head mask: \n {head_mask} \n head importance \n {head_importance}")
 
         # Reinitialize the model and trainer
         model.cpu()
@@ -217,6 +223,7 @@ def mask_heads(model_name, training_args, collate_fn, compute_metrics, transform
         head_importance, preds, labels = compute_heads_importance(
             model, eval_dataloader, head_mask=new_head_mask
         )
+
 
     logger.info("Final head mask")
     print_2d_tensor(head_mask)
@@ -307,7 +314,7 @@ def main():
         return metric.compute(predictions=np.argmax(p.predictions, axis=1), references=p.label_ids)
 
 
-    training_args = TrainingArguments(output_dir="./pruning_checkpoints", per_device_train_batch_size=16,
+    training_args = TrainingArguments(output_dir="./starting_checkpoint", per_device_train_batch_size=16,
         evaluation_strategy="no", max_steps=100, fp16=True, save_steps=100, eval_steps=100, logging_steps=100,
         learning_rate=2e-4, save_total_limit=2, remove_unused_columns=False, push_to_hub=False, report_to='tensorboard',
         load_best_model_at_end=False, disable_tqdm=True,)
