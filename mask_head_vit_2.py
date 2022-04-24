@@ -1,10 +1,12 @@
-## This file contains masking head technique for ViT based on the LTH.
+## This file contains masking head technique for ViT based on the LTH but without the head mask gradient.
 import logging
 import os
+import argparse
 
 import numpy as np
 from tqdm import tqdm
 import torch
+
 
 from transformers import ViTModel, ViTConfig, ViTForImageClassification, ViTFeatureExtractor, Trainer, TrainingArguments
 from datasets import load_dataset, load_metric
@@ -21,7 +23,7 @@ min_importance = 0.1
 dont_normalize_importance_by_layer = False
 dont_normalize_global_importance = False
 dataset_name = 'cifar100'
-model_name = 'google/vit-base-patch16-224-in21k'
+model_name = 'starting_checkpoint/checkpoint-100'
 
 no_cuda = False
 local_rank = -1
@@ -46,51 +48,43 @@ def print_2d_tensor(tensor):
             logger.info(f"layer {row + 1}:\t" + "\t".join(f"{x:d}" for x in tensor[row].cpu().data))
 
 
-def compute_heads_importance(model, eval_dataloader, compute_importance=True, head_mask=None
-):
-    """ This method shows how to compute:
-        - head attention entropy
-        - head importance scores according to http://arxiv.org/abs/1905.10650
-    """
+def compute_heads_importance(model, eval_dataloader, compute_importance=True, head_mask=None):
     # Prepare our tensors
-    n_heads = model.config.num_attention_heads
-    n_layers = model.config.num_hidden_layers
+    n_heads = 12
+    n_layers = 12
     head_importance = torch.zeros(n_layers, n_heads).to(device)
-    attn_entropy = torch.zeros(n_layers, n_heads).to(device)
 
     if head_mask is None and compute_importance:
         head_mask = torch.ones(n_layers, n_heads).to(device)
-        head_mask.requires_grad_(requires_grad=True)
     elif compute_importance:
         head_mask = head_mask.clone().detach()
-        head_mask.requires_grad_(requires_grad=True)
 
     preds = None
     labels = None
     tot_tokens = 14 * 14
-    for step, batch in enumerate(tqdm(eval_dataloader, desc="Iteration", disable=local_rank not in [-1, 0])):
+    for step, batch in enumerate(tqdm(eval_dataloader, desc="Iteration", disable=True)):
         input_ids = batch['pixel_values'].to(device)
         label_ids = batch['labels'].to(device)
-
 
         # Do a forward pass (not with torch.no_grad() since we need gradients for importance score - see below)
         # outputs = model(
         #     pixel_values=input_ids, head_mask=head_mask, labels=label_ids
         # )
         outputs = model(
-            pixel_values=input_ids, head_mask=None, labels=label_ids
+            pixel_values=input_ids, labels=label_ids, output_attentions=True
         )
 
-        # print(outputs)
-        loss, logits = (
+        loss, logits, attentions = (
             outputs.loss,
             outputs.logits,
+            outputs.attentions
         )  # Loss and logits
-        loss.backward()  # Backpropagate to populate the gradients in the head mask
+        loss.backward()
 
-        if compute_importance:
-            # print("Head importance, ", head_mask.grad.abs().detach())
-            head_importance += head_mask.grad.abs().detach()
+        attention_grads = [attention_map.grad.detach().cpu() for attention_map in attentions]
+        attentions = [attention_map.detach().cpu() for attention_map in attentions]
+
+        head_sensitivity = [torch.matmul(x, y).abs() for x, y in zip(attentions, attention_grads)]
 
         # Also store our logits/labels if we want to compute metrics afterwards
         if preds is None:
@@ -100,10 +94,23 @@ def compute_heads_importance(model, eval_dataloader, compute_importance=True, he
             preds = np.append(preds, logits.detach().cpu().numpy(), axis=0)
             labels = np.append(labels, label_ids.detach().cpu().numpy(), axis=0)
 
-        # tot_tokens += input_mask.float().detach().sum().data
+        # add attention heads to head_importance by simply taking the sum. The different indexes are to account for the
+        # pruning of the heads.
+        j_idx = 0
+        row_visited = False
+        for layer_idx in range(n_layers):
+            i_idx = 0
+            for head_idx in range(n_heads):
+                if head_mask[layer_idx, head_idx] == 1:
+                    row_visited = True
+                    head_importance[layer_idx][head_idx] += head_sensitivity[j_idx].sum(dim=0).sum(dim=1)[i_idx][0]
+                    i_idx += 1
+            if row_visited:
+                j_idx += 1
+                row_visited = False
 
     if compute_importance:
-        # Normalize
+        # Normalize`
         # TODO: Check how to normalize
         # print(f"Head_Importance 1 {head_importance}")
         head_importance /= tot_tokens
@@ -119,7 +126,8 @@ def compute_heads_importance(model, eval_dataloader, compute_importance=True, he
         if not dont_normalize_global_importance:
             head_importance = (head_importance - head_importance.min()) / (
                         head_importance.max() - head_importance.min())
-            print(f"Head_Importance 4 {head_importance}")
+            # print(f"Head_Importance 4 {head_importance}")
+
 
         # Print/save matrices
         np.save(os.path.join(output_dir, "head_importance.npy"), head_importance.detach().cpu().numpy())
@@ -134,18 +142,18 @@ def compute_heads_importance(model, eval_dataloader, compute_importance=True, he
         head_ranks = head_ranks.view_as(head_importance)
         print_2d_tensor(head_ranks)
 
-    return attn_entropy, head_importance, preds, labels
+    return head_importance, preds, labels
 
 
-def mask_heads(model_name, training_args, collate_fn, compute_metrics, transformed_train_ds, transformed_val_ds, feature_extractor, labels_org):
+def mask_heads(model_name, training_args, collate_fn, compute_metrics, transformed_train_ds, transformed_val_ds, feature_extractor):
     # Initialize the model and trainer
-    model, trainer, eval_dataloader = reset_model(model_name, training_args, collate_fn, compute_metrics, transformed_train_ds, transformed_val_ds, feature_extractor, labels_org)
+    model, trainer, eval_dataloader = reset_model(model_name, training_args, collate_fn, compute_metrics, transformed_train_ds, transformed_val_ds, feature_extractor)
     # Train the model for 1000 steps (about 33% of the training data).
     train_results = trainer.train()
     trainer.log_metrics("train", train_results.metrics)
     # load trained model
     model = trainer.model
-    _, head_importance, preds, labels = compute_heads_importance(model, eval_dataloader)
+    head_importance, preds, labels = compute_heads_importance(model, eval_dataloader)
 
     print(f"Starting score {compute_score(preds, labels)}")
     new_head_mask = torch.ones_like(head_importance)
@@ -157,6 +165,9 @@ def mask_heads(model_name, training_args, collate_fn, compute_metrics, transform
         if save_mask_all_iterations:
             np.save(os.path.join(output_dir, f"head_mask_{i}.npy"), head_mask.detach().cpu().numpy())
             np.save(os.path.join(output_dir, f"head_importance_{i}.npy"), head_importance.detach().cpu().numpy())
+            print(f"Iteration {i} score: {compute_score(preds, labels)}")
+            print(f"Iteration {i} head mask: \n {head_mask}")
+            print(f"Iteration {i} head importance: \n {head_importance}")
         i += 1
         # heads from least important to most - keep only not-masked heads
         head_importance[head_mask == 0.0] = float("Inf")
@@ -166,16 +177,16 @@ def mask_heads(model_name, training_args, collate_fn, compute_metrics, transform
             print("Break 1", len(current_heads_to_mask), num_to_mask)
             break
 
+        print(f"Number of heads left: {torch.sum(new_head_mask)}")
+        if torch.sum(new_head_mask) < 10:
+            print(f"Only {torch.sum(new_head_mask)} number of heads left causing the algorithm to stop searching.")
+            break
+
         # mask heads
         # print(f"Current heads to mask {current_heads_to_mask}")
         selected_heads_to_mask = []
         for head in current_heads_to_mask:
             print(head_importance.view(-1)[head.item()])
-            # if head_importance.view(-1)[head.item()] > min_importance:
-            #     print(f"No more importance scores less than {min_importance}")
-            #     running = False
-            #     print(f"checking if still running")
-            #     break
 
             if len(selected_heads_to_mask) == num_to_mask or head_importance.view(-1)[head.item()] == float("Inf"):
                 print("Break 2", len(selected_heads_to_mask), num_to_mask)
@@ -185,6 +196,8 @@ def mask_heads(model_name, training_args, collate_fn, compute_metrics, transform
             new_head_mask[layer_idx][head_idx] = 0.0
             selected_heads_to_mask.append(head.item())
             print(f"Layer {layer_idx}, head number {head_idx} is pruned. Number of heads pruned is: {len(selected_heads_to_mask)}")
+
+
 
         if not running:
             break
@@ -199,9 +212,9 @@ def mask_heads(model_name, training_args, collate_fn, compute_metrics, transform
         print_2d_tensor(new_head_mask)
 
         # Reinitialize the model and trainer
+        model.cpu()
         model, trainer, eval_dataloader = reset_model(model_name, training_args, collate_fn, compute_metrics,
-                                                      transformed_train_ds, transformed_val_ds, feature_extractor,
-                                                      labels_org)
+                                                      transformed_train_ds, transformed_val_ds, feature_extractor)
         # Train the model for 1000 steps (about 33% of the training data).
         head_mask_dict = numpy_to_dict(new_head_mask)
         model.prune_heads(head_mask_dict)
@@ -211,10 +224,10 @@ def mask_heads(model_name, training_args, collate_fn, compute_metrics, transform
         model = trainer.model
 
         # Compute metric and head importance again
-        _, head_importance, preds, labels = compute_heads_importance(
+        head_importance, preds, labels = compute_heads_importance(
             model, eval_dataloader, head_mask=new_head_mask
         )
-        print(f"Iteration {i}, score {compute_score(preds, labels)}")
+
 
     logger.info("Final head mask")
     print_2d_tensor(head_mask)
@@ -242,9 +255,8 @@ def compute_score(preds, labels):
         total_count += 1
     return correct_count/total_count
 
-def reset_model(model_name, training_args, collate_fn, compute_metrics, transformed_train_ds, transformed_val_ds, feature_extractor, labels):
-    model = ViTForImageClassification.from_pretrained(model_name, num_labels=len(labels),
-        id2label={str(i): c for i, c in enumerate(labels)}, label2id={c: str(i) for i, c in enumerate(labels)})
+def reset_model(model_name, training_args, collate_fn, compute_metrics, transformed_train_ds, transformed_val_ds, feature_extractor):
+    model = ViTForImageClassification.from_pretrained(model_name)
 
     trainer = Trainer(model=model, args=training_args, data_collator=collate_fn, compute_metrics=compute_metrics,
         train_dataset=transformed_train_ds, eval_dataset=transformed_val_ds, tokenizer=feature_extractor, )
@@ -306,10 +318,10 @@ def main():
         return metric.compute(predictions=np.argmax(p.predictions, axis=1), references=p.label_ids)
 
 
-    training_args = TrainingArguments(output_dir="./pruning_checkpoints", per_device_train_batch_size=16,
-        evaluation_strategy="no", max_steps=1000, fp16=True, save_steps=1000, eval_steps=1000, logging_steps=100,
+    training_args = TrainingArguments(output_dir="./starting_checkpoint", per_device_train_batch_size=16,
+        evaluation_strategy="no", max_steps=100, fp16=True, save_steps=100, eval_steps=100, logging_steps=100,
         learning_rate=2e-4, save_total_limit=2, remove_unused_columns=False, push_to_hub=False, report_to='tensorboard',
-        load_best_model_at_end=False, )
+        load_best_model_at_end=False, disable_tqdm=True,)
 
     ## MNIST
     if dataset_name == 'mnist': labels = train_ds.features['label'].names
@@ -317,10 +329,31 @@ def main():
     ## CIFAR
     if dataset_name == 'cifar100': labels = train_ds.features['fine_label'].names
 
+    # Initial model. Train for 100 steps.
+    model = ViTForImageClassification.from_pretrained('google/vit-base-patch16-224-in21k', num_labels=len(labels),
+                                                      id2label={str(i): c for i, c in enumerate(labels)},
+                                                      label2id={c: str(i) for i, c in enumerate(labels)})
+
+    trainer = Trainer(model=model, args=training_args, data_collator=collate_fn, compute_metrics=compute_metrics,
+        train_dataset=transformed_train_ds, eval_dataset=transformed_val_ds, tokenizer=feature_extractor, )
+
+    # Distributed and parallel training
+    model.to(device)
+    train_results = trainer.train()
+    trainer.log_metrics("train", train_results.metrics)
+
+    model.cpu()
+
+    training_args = TrainingArguments(output_dir="./pruning_checkpoints", per_device_train_batch_size=16,
+        evaluation_strategy="no", max_steps=1000, fp16=True, save_steps=1000, eval_steps=1000, logging_steps=100,
+        learning_rate=2e-4, save_total_limit=3, remove_unused_columns=False, push_to_hub=False, report_to='tensorboard',
+        load_best_model_at_end=False, disable_tqdm=True,)
+
+
     # Try head masking (set heads to zero until the score goes under a threshole)
     # and head pruning (remove masked heads and see the effect on the network)
     if try_masking and masking_threshold > 0.0 and masking_threshold < 1.0:
-        head_mask = mask_heads(model_name, training_args, collate_fn, compute_metrics, transformed_train_ds, transformed_val_ds, feature_extractor, labels)
+        head_mask = mask_heads(model_name, training_args, collate_fn, compute_metrics, transformed_train_ds, transformed_val_ds, feature_extractor)
 
         print(head_mask)
 
