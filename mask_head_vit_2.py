@@ -24,6 +24,7 @@ dont_normalize_importance_by_layer = False
 dont_normalize_global_importance = False
 dataset_name = 'cifar100'
 model_name = 'starting_checkpoint/checkpoint-100'
+final_scores = []
 
 no_cuda = False
 local_rank = -1
@@ -79,12 +80,24 @@ def compute_heads_importance(model, eval_dataloader, compute_importance=True, he
             outputs.logits,
             outputs.attentions
         )  # Loss and logits
+        for attention_map in attentions:
+            attention_map.retain_grad()
         loss.backward()
-
         attention_grads = [attention_map.grad.detach().cpu() for attention_map in attentions]
         attentions = [attention_map.detach().cpu() for attention_map in attentions]
 
-        head_sensitivity = [torch.matmul(x, y).abs() for x, y in zip(attentions, attention_grads)]
+        # Here we take the matrix multiplication between the attention head and the attention head gradient w.r.t.
+        # the loss function as described in theory.
+        # We take the shape [0, 1:] as it is the attention referring to the [CLS] token then take the sum of all
+        # the inputs in that attention matrix to get our head sensitivity.
+        all_heads_sensitivity = []
+        for layer, layer_grad in zip(attentions, attention_grads):
+            head_sensitivity = torch.zeros(layer.shape[1])
+            for batch, batch_grad in zip(layer, layer_grad):
+                for idx, (head, head_grad) in enumerate(zip(batch, batch_grad)):
+                    head_sensitivity[idx] += torch.matmul(head, head_grad).abs()[0, 1:].sum(dim=0)
+            all_heads_sensitivity.append(head_sensitivity)
+
 
         # Also store our logits/labels if we want to compute metrics afterwards
         if preds is None:
@@ -103,7 +116,7 @@ def compute_heads_importance(model, eval_dataloader, compute_importance=True, he
             for head_idx in range(n_heads):
                 if head_mask[layer_idx, head_idx] == 1:
                     row_visited = True
-                    head_importance[layer_idx][head_idx] += head_sensitivity[j_idx].sum(dim=0).sum(dim=1)[i_idx][0]
+                    head_importance[layer_idx][head_idx] += all_heads_sensitivity[j_idx][i_idx]
                     i_idx += 1
             if row_visited:
                 j_idx += 1
@@ -127,7 +140,6 @@ def compute_heads_importance(model, eval_dataloader, compute_importance=True, he
             head_importance = (head_importance - head_importance.min()) / (
                         head_importance.max() - head_importance.min())
             # print(f"Head_Importance 4 {head_importance}")
-
 
         # Print/save matrices
         np.save(os.path.join(output_dir, "head_importance.npy"), head_importance.detach().cpu().numpy())
@@ -165,6 +177,7 @@ def mask_heads(model_name, training_args, collate_fn, compute_metrics, transform
         if save_mask_all_iterations:
             np.save(os.path.join(output_dir, f"head_mask_{i}.npy"), head_mask.detach().cpu().numpy())
             np.save(os.path.join(output_dir, f"head_importance_{i}.npy"), head_importance.detach().cpu().numpy())
+            final_scores.append(compute_score(preds, labels))
             print(f"Iteration {i} score: {compute_score(preds, labels)}")
             print(f"Iteration {i} head mask: \n {head_mask}")
             print(f"Iteration {i} head importance: \n {head_importance}")
