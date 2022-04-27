@@ -33,5 +33,5 @@ python3 -m pip install --user matplotlib
 
 
 ## Run code
-#srun python3 /rwthfs/rz/cluster/home/rs062004/tmp/pycharm_project_109/mask_head_vit_3.py
-srun python3 /rwthfs/rz/cluster/home/rs062004/tmp/pycharm_project_109/main.py --head_mask=saved_numpys/head_mask_5.npy --mask_heads
+srun python3 /rwthfs/rz/cluster/home/rs062004/tmp/pycharm_project_109/mask_head_vit_2.iter.py --output_dir=saved_numpys_cifar100_2_iter
+#srun python3 /rwthfs/rz/cluster/home/rs062004/tmp/pycharm_project_109/main.py --head_mask=saved_numpys/head_mask_5.npy --mask_heads
