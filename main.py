@@ -31,7 +31,7 @@ print('Device =', device)
 if args.use_initial_weights:
     model_name = 'google/vit-base-patch16-224-in21k'
 else:
-    model_name = 'starting_checkpoint/checkpoint-100'
+    model_name = 'starting_checkpoint_' + args.dataset_name + '/checkpoint-100'
 
 
 if args.dataset_name == 'mnist':
