@@ -1,3 +1,9 @@
+"""
+This folder contains code to plot the results from different head pruning experiments.
+
+This file was created by and designed by Christopher du Toit.
+"""
+
 import matplotlib.pyplot as plt
 import numpy as np
 
@@ -23,17 +29,160 @@ def head_mask_2_results():
     plt.ylabel("Validation accuracy of the model.")
     plt.show()
 
+def produce_heat_map(arr, title):
+    fig, ax = plt.subplots()
+    im = ax.imshow(arr)
 
-mask_2_results = [0.8784, 0.8680, 0.8522, 0.8322, 0.8230, 0.7582, 0.6882, 0.4556, 0.3154]
-mask_3_results = [0.8782, 0.8484, 0.8368, 0.8116, 0.7142, 0.3514, 0.2026, 0.1616, 0.1264]
-mask_2_results = np.array(mask_2_results)
-mask_3_results = np.array(mask_3_results)
-percentages = np.arange(0, 90, 10)
+    # Show all ticks and label them with the respective list entries
+    ax.set_xticks(np.arange(arr.shape[1]))
+    ax.set_yticks(np.arange(arr.shape[0]))
 
-plt.plot(percentages, mask_2_results, label='mask_2_results')
-plt.plot(percentages, mask_3_results, label='mask_3_results')
-plt.legend()
-plt.title("mask_head_vit_cifar100")
-plt.xlabel("Percentage of heads pruned. %")
-plt.ylabel("Validation accuracy of the model. %")
-plt.show()
+
+    # Loop over data dimensions and create text annotations.
+    for i in range(arr.shape[0]):
+        for j in range(arr.shape[1]):
+            text = ax.text(j, i, arr[i][j], ha="center", va="center", color="w")
+
+    ax.set_title(title)
+    ax.set_xlabel("Head number")
+    ax.set_ylabel("Layer number")
+    fig.tight_layout()
+    plt.show()
+
+def produce_line_plot(results_list, title, legend):
+    pass
+
+
+
+def head_mask_2_iter_mnist():
+    heatmap = np.load('saved_numpys_mnist_2_iter/output_heatmap_mask.npy')
+    produce_heat_map(heatmap, 'MNIST pruning heatmap')
+
+def prune_percentages_arr(num_iters):
+    pruned = 0
+    unpruned = 100
+    percentages = []
+    percentages.append(pruned)
+    for i in range(num_iters):
+        unpruned = unpruned*0.8
+        pruned = 100 - unpruned
+        percentages.append(round(pruned, 1))
+    return percentages
+
+def head_mask_2_iter_comparison():
+    heatmap = np.load('saved_numpys_cifar100_2_iter/output_heatmap_mask.npy')
+    produce_heat_map(heatmap, 'CIFAR100 pruning heatmap')
+    heatmap = np.load('saved_numpys_cifar10_2_iter/output_heatmap_mask.npy')
+    produce_heat_map(heatmap, 'CIFAR10 pruning heatmap')
+    heatmap = np.load('saved_numpys_mnist_2_iter/output_heatmap_mask.npy')
+    produce_heat_map(heatmap, 'MNIST pruning heatmap')
+    percentages = prune_percentages_arr(12)
+    x = np.arange(13)
+    results_cifar100 = np.load('saved_numpys_cifar100_2_iter/final_scores.npy')
+    results_cifar10 = np.load('saved_numpys_cifar10_2_iter/final_scores.npy')
+    results_mnist = np.load('saved_numpys_mnist_2_iter/final_scores.npy')
+
+    plt.plot(x, results_cifar100, label='CIFAR100', marker='x')
+    plt.plot(x, results_cifar10, label='CIFAR10', marker='x')
+    plt.plot(x, results_mnist, label='MNIST', marker='x')
+    plt.title("mask_head_vit_2_iter")
+    plt.xlabel("Percentage of heads pruned. %")
+    plt.ylabel("Validation accuracy of the model. %")
+
+    plt.xticks(x, labels=percentages)
+    plt.legend()
+    plt.show()
+
+def plot_heatmaps():
+    heatmap_cifar100 = np.load('saved_numpys_cifar100_2_iter/output_heatmap_mask.npy')
+    heatmap_cifar10 = np.load('saved_numpys_cifar10_2_iter/output_heatmap_mask.npy')
+    heatmap_mnist = np.load('saved_numpys_mnist_2_iter/output_heatmap_mask.npy')
+    heatmap = np.zeros((12, 12))
+    for i in range(heatmap_cifar100.shape[0]):
+        for j in range(heatmap_cifar100.shape[1]):
+            if heatmap_cifar100[i][j] == heatmap_cifar10[i][j] == heatmap_mnist[i][j]:
+                heatmap[i][j] = heatmap_cifar100[i][j]
+
+    produce_heat_map(heatmap, 'Comparison heatmap all datasets')
+    heatmap = np.zeros((12, 12))
+    for i in range(heatmap_cifar100.shape[0]):
+        for j in range(heatmap_cifar100.shape[1]):
+            if heatmap_cifar100[i][j] == heatmap_cifar10[i][j]:
+                heatmap[i][j] = heatmap_cifar100[i][j]
+
+    produce_heat_map(heatmap, 'Comparison heatmap CIFAR100 and CIFAR10')
+    heatmap = np.zeros((12, 12))
+    for i in range(heatmap_cifar100.shape[0]):
+        for j in range(heatmap_cifar100.shape[1]):
+            if heatmap_cifar100[i][j] == heatmap_mnist[i][j]:
+                heatmap[i][j] = heatmap_cifar100[i][j]
+
+    produce_heat_map(heatmap, 'Comparison heatmap CIFAR100 and MNIST')
+    heatmap = np.zeros((12, 12))
+    for i in range(heatmap_cifar100.shape[0]):
+        for j in range(heatmap_cifar100.shape[1]):
+            if heatmap_cifar10[i][j] == heatmap_mnist[i][j]:
+                heatmap[i][j] = heatmap_cifar10[i][j]
+
+    produce_heat_map(heatmap, 'Comparison heatmap CIFAR10 and MNIST')
+
+def cifar100_full_trained():
+    training_times = np.load('cifar100_fully_trained_test_results/training_times.npy')
+    testing_samples_per_second= np.load('cifar100_fully_trained_test_results/testing_samples_per_second.npy')
+    accuracy = np.load('cifar100_fully_trained_test_results/accuracy.npy')
+    results_cifar100 = np.load('saved_numpys_cifar100_2_iter/final_scores.npy')
+    accuracy_attempt7 = np.load('cifar100_fully_trained_test_results/accuracy_attempt7.npy')
+    results_cifar100_attempt7 = np.load('saved_numpys_attempt7_rerun/final_scores.npy')
+    x = np.arange(13)
+    percentages = prune_percentages_arr(12)
+    results_cifar100 *= 100
+    results_cifar100_attempt7 *= 100
+    print(f"accuracy \n {accuracy} \n validation results \n {results_cifar100}")
+    print(f"accuracy \n {accuracy_attempt7} \n validation results \n {results_cifar100_attempt7}")
+    print(accuracy_attempt7 - results_cifar100_attempt7)
+    plt.plot(x, results_cifar100, 'b--', label='Validation old', marker='x')
+    plt.plot(x, accuracy, 'b', label='Fully trained old', marker='x')
+    plt.plot(x, results_cifar100_attempt7, 'r--', label='Validation new', marker='x')
+    plt.plot(x, accuracy_attempt7, 'r', label='Fully trained new', marker='x')
+    plt.title("CIFAR100 fully trained vs validation accuracy")
+    plt.xlabel("Percentage of heads pruned. %")
+    plt.ylabel("Accuracy of the model. %")
+
+    plt.xticks(x, labels=percentages)
+    plt.legend()
+    plt.show()
+
+def cifar100_smart_iter():
+    pruning_percentages = np.load('saved_numpys_iterative_test_1/pruning_percentages.npy')
+    validation_results = np.load('saved_numpys_iterative_test_1/final_scores.npy') * 100
+    full_trained_results = np.load('saved_numpys_iterative_test_1/full_trained_results.npy')
+    print(pruning_percentages)
+    x = np.arange(pruning_percentages.shape[0])
+    for i, percent in enumerate(pruning_percentages):
+        if percent < 0:
+            pruning_percentages[i] = 1/144
+
+    pruning_percentages = np.round(pruning_percentages, 3)
+    print(pruning_percentages)
+    pruning_percentages = np.cumsum(pruning_percentages)
+    print(pruning_percentages)
+    plt.xticks(x, labels=pruning_percentages)
+    plt.plot(x, validation_results, marker='x', linestyle='-', label='Validation scores', color='r')
+    plt.plot(x, full_trained_results, marker='x', linestyle='-', label='Full trained scores', color='b')
+    plt.axhline(y=0.92 * validation_results[0], color='r', linestyle='--')
+    plt.axhline(y=full_trained_results[0] - 3, color='b', linestyle='--')
+
+    plt.show()
+
+#
+# accuracy_attempt7 = np.load('cifar100_fully_trained_test_results/accuracy_attempt7.npy')
+# results_cifar100_attempt7 = np.load('saved_numpys_attempt7_rerun/final_scores.npy') * 100
+# print(accuracy_attempt7[:5])
+# print(results_cifar100_attempt7[:5])
+# first_score = results_cifar100_attempt7[0]
+# print(results_cifar100_attempt7[:5] - first_score)
+# print(abs(results_cifar100_attempt7[:5] - first_score)/first_score)
+# percentages = prune_percentages_arr(12)
+# print(percentages[:5])
+
+cifar100_smart_iter()

@@ -1,5 +1,8 @@
-## This file contains masking head technique for ViT based on the LTH but by using attn * grad_attn. This is approach
-# differs because it uses an algorithm to decide what the next pruning percentage should be based on the validation loss.
+"""
+This file contains masking head technique for ViT based on the LTH but by using attn * grad_attn. This is approach
+differs because it uses an algorithm to decide what the next pruning percentage should be based on the validation loss.
+"""
+
 import logging
 import os
 import argparse

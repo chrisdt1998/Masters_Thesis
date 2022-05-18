@@ -9,7 +9,7 @@ import numpy as np
 from tqdm import tqdm
 import torch
 
-from transformers import DeiTFeatureExtractor, DeiTForImageClassification, DeiTConfig, Trainer, TrainingArguments
+from transformers import ViTModel, ViTConfig, ViTForImageClassification, AutoFeatureExtractor, Trainer, TrainingArguments, AutoConfig
 from datasets import load_dataset, load_metric
 
 logger = logging.getLogger(__name__)
@@ -265,7 +265,7 @@ def compute_score(preds, labels):
 
 
 def reset_model(args):
-    model = DeiTForImageClassification.from_pretrained(
+    model = ViTForImageClassification.from_pretrained(
         "starting_checkpoint_" + args.dataset_name + '_' + str(args.iteration_id) + "/checkpoint-100")
 
     trainer = Trainer(model=model, args=args.training_args, data_collator=args.collate_fn,
@@ -326,10 +326,10 @@ def main():
     # Load pretrained model
     # Initializing a ViT vit-base-patch16-224 style configuration
     if args.dataset_name == 'mnist':
-        feature_extractor = DeiTFeatureExtractor.from_pretrained('facebook/deit-base-patch16-224', image_mean=0.5,
+        feature_extractor = AutoFeatureExtractor.from_pretrained('facebook/deit-base-patch16-224', image_mean=0.5,
                                                                 image_std=0.5)
     else:
-        feature_extractor = DeiTFeatureExtractor.from_pretrained('facebook/deit-base-patch16-224')
+        feature_extractor = AutoFeatureExtractor.from_pretrained('facebook/deit-base-patch16-224')
 
     train_ds, test_ds = load_dataset(args.dataset_name, split=['train', 'test'])
     splits = train_ds.train_test_split(test_size=0.1)
@@ -390,8 +390,17 @@ def main():
                                       log_level='critical', )
 
     # Initial model. Train for 100 steps.
-    model_config = DeiTConfig('facebook/deit-base-patch16-224')
-    model = DeiTForImageClassification.from_pretrained(model_config)
+    # model_config = ViTConfig('facebook/deit-base-patch16-224')
+    model = ViTForImageClassification.from_pretrained('facebook/deit-base-patch16-224', num_labels=len(labels),
+                                                      id2label={str(i): c for i, c in enumerate(labels)},
+                                                      label2id={c: str(i) for i, c in enumerate(labels)})
+    # config = model.config
+    # config.id2label = {str(i): c for i, c in enumerate(labels)}
+    # config.label2id = {c: str(i) for i, c in enumerate(labels)}
+    # model = ViTForImageClassification(config)
+
+    print(model.config)
+
 
     trainer = Trainer(model=model, args=training_args, data_collator=collate_fn, compute_metrics=compute_metrics,
                       train_dataset=transformed_train_ds, eval_dataset=transformed_val_ds,
