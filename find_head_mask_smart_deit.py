@@ -1,5 +1,10 @@
-## This file contains masking head technique for ViT based on the LTH but by using attn * grad_attn. This is approach
-# differs because it uses an algorithm to decide what the next pruning percentage should be based on the validation loss.
+"""
+This file contains masking head technique for ViT based on the LTH but by using attn * grad_attn. This is approach
+differs because it uses an algorithm to decide what the next pruning percentage should be based on the validation loss.
+
+This file was created by and designed by Christopher du Toit.
+"""
+
 import logging
 import os
 import argparse
@@ -18,17 +23,24 @@ logging.getLogger().setLevel('CRITICAL')
 logger.disabled = True
 
 
-def print_2d_tensor(tensor):
-    """ Print a 2D tensor """
-    logger.info("lv, h >\t" + "\t".join(f"{x + 1}" for x in range(len(tensor))))
-    for row in range(len(tensor)):
-        if tensor.dtype != torch.long:
-            logger.info(f"layer {row + 1}:\t" + "\t".join(f"{x:.5f}" for x in tensor[row].cpu().data))
-        else:
-            logger.info(f"layer {row + 1}:\t" + "\t".join(f"{x:d}" for x in tensor[row].cpu().data))
-
-
 def compute_heads_importance(args, model, eval_dataloader, head_mask=None):
+    """
+    This method computes the head importance of the transformer heads in each layer. The way it does this is by
+    computing attention sum(attn_head * attn_head_gradient)/num_tokens for each head and then dividing again by the
+    number of heads in that layer. The attn_head and attn_head_gradient are computed by performing a forward and
+    backward pass on the model, where the input is the validation dataset. We then normalize by both global
+    and local (layer wise) normalization as this provides a significant boost in performance. The output values are the
+    importance values for each head in the model. More information can be found in the accompanying report (TBD).
+    :param args: Args parser containing arguments.
+    :type args: argparse
+    :param model: Model object for DeiT-B.
+    :type model: class
+    :param eval_dataloader: Evaluation dataloader containing the evaluation dataset.
+    :type eval_dataloader: dataloader
+    :param head_mask: Tensor containing the current head mask.
+    :type head_mask: tensor
+    :return: The head importance, predictions and true labels.
+    """
     # Prepare our tensors
     n_heads = 12
     n_layers = 12
@@ -41,24 +53,19 @@ def compute_heads_importance(args, model, eval_dataloader, head_mask=None):
 
     preds = None
     labels = None
-    # tot_tokens = 14 * 14
-    # tot_tokens = 0
+
+    # Iterate through the evaluation data
     for step, batch in enumerate(tqdm(eval_dataloader, desc="Iteration", disable=True)):
         input_ids = batch['pixel_values'].to(args.device)
         label_ids = batch['labels'].to(args.device)
 
-        # Do a forward pass (not with torch.no_grad() since we need gradients for importance score - see below)
-        # outputs = model(
-        #     pixel_values=input_ids, head_mask=head_mask, labels=label_ids
-        # )
         outputs = model(pixel_values=input_ids, labels=label_ids, output_attentions=True)
 
         loss, logits, attentions = (outputs.loss, outputs.logits, outputs.attentions)  # Loss and logits
+
         for attention_map in attentions:
             attention_map.retain_grad()
         loss.backward()
-        # attention_grads = [attention_map.grad.detach().cpu() for attention_map in attentions]
-        # attentions = [attention_map.detach().cpu() for attention_map in attentions]
         attention_grads = [attention_map.grad for attention_map in attentions]
 
         all_heads_sensitivity = []
@@ -68,15 +75,9 @@ def compute_heads_importance(args, model, eval_dataloader, head_mask=None):
             heads = layer.sum(dim=0)
             heads_grad = layer_grad.sum(dim=0)
             for idx, (head, head_grad) in enumerate(zip(heads, heads_grad)):
-                # head_sensitivity[idx] = (head * head_grad).abs().sum().detach().cpu() / (14 * 14)
                 head_sensitivity[idx] = (head * head_grad).abs().sum().detach().cpu() / (197 * 197)
 
             all_heads_sensitivity.append(head_sensitivity / tot_tokens)
-
-        # attentions is a list of tensors. Each list index is a layer and each layer consists of a tensor shape:
-        # Batch x Heads x 197 x 197
-
-
 
         for attention_map, attention_grad_map in zip(attentions, attention_grads):
             attention_map.detach().cpu()
@@ -105,44 +106,45 @@ def compute_heads_importance(args, model, eval_dataloader, head_mask=None):
                 j_idx += 1
                 row_visited = False
 
-    # Normalize`
-    # TODO: Check how to normalize
-    # print(f"Head_Importance 1 {head_importance}")
-    # head_importance /= tot_tokens
-    # print(f"Head_Importance 2 {head_importance}")
+    # Global importance normalization.
+    if not args.dont_normalize_global_importance:
+        head_importance = (head_importance - head_importance.min()) / (
+                head_importance.max() - head_importance.min())
 
-    # Layerwise importance normalization
+    # Layerwise importance normalization.
     if not args.dont_normalize_importance_by_layer:
         exponent = 2
         norm_by_layer = torch.pow(torch.pow(head_importance, exponent).sum(-1), 1 / exponent)
-        head_importance /= norm_by_layer.unsqueeze(-1) + 1e-20  # print(f"Head_Importance 3 {head_importance}")
-    if not args.dont_normalize_global_importance:
-        head_importance = (head_importance - head_importance.min()) / (
-                head_importance.max() - head_importance.min())  # print(f"Head_Importance 4 {head_importance}")
+        head_importance /= norm_by_layer.unsqueeze(-1) + 1e-20
+
 
     # Print/save matrices
     np.save(os.path.join(args.output_dir, "head_importance.npy"), head_importance.detach().cpu().numpy())
-
-    logger.info("Head importance scores")
-    print_2d_tensor(head_importance)
-    logger.info("Head ranked by importance scores")
-    head_ranks = torch.zeros(head_importance.numel(), dtype=torch.long, device=args.device)
-    head_ranks[head_importance.view(-1).sort(descending=True)[1]] = torch.arange(head_importance.numel(),
-        device=args.device)
-    head_ranks = head_ranks.view_as(head_importance)
-    print_2d_tensor(head_ranks)
 
     return head_importance, preds, labels
 
 
 def mask_heads(args):
+    """
+    This method applies the masking based on a masking factor which is iteratively computed each iteration based on the
+    previous validation result. The masking procedure masks the heads in terms of importance computed via the
+    compute_heads_importance method, with the least importance heads being pruned first. The pruning is done globally,
+    i.e. some layers can be completely removed.
+    :param args: Args parser containing arguments.
+    :type args: argparse
+    :return: Final head mask
+    :rtype: tensor
+    """
     # Initialize the model and trainer
     model, trainer, eval_dataloader = reset_model(args)
+
     # Train the model for 1000 steps (about 33% of the training data).
     train_results = trainer.train()
     trainer.log_metrics("train", train_results.metrics)
+
     # load trained model
     model = trainer.model
+
     head_importance, preds, labels = compute_heads_importance(args, model, eval_dataloader)
     original_score = compute_score(preds, labels)
     current_score = original_score
@@ -151,6 +153,8 @@ def mask_heads(args):
     i = 0
     final_scores = []
     pruning_percentages = [0, ]
+    num_heads_pruned = [0, ]
+    total_num_heads_pruned = [0, ]
     masking_factor = 0.2
     output_heatmap_mask = np.ones((12, 12)) * args.num_epochs
     while i < args.num_epochs:
@@ -163,13 +167,32 @@ def mask_heads(args):
             print(f"Iteration {i} head mask: \n {head_mask}")
             print(f"Iteration {i} head importance: \n {head_importance}")
         i += 1
+        # heads from least important to most - keep only not-masked heads
+        masking_factor = compute_next_pruning_factor(args, original_score, current_score, masking_factor)
+        masking_factor = min(masking_factor, args.initial_pruning_factor)
+
+        # If masking factor is less than 0, this means that we should backtrack
+        if masking_factor < 0:
+            print(f"Masking factor, {masking_factor} is less than 0, therefore we need to backtrack.")
+            previous_masking_factor = pruning_percentages[-1]
+            masking_factor = previous_masking_factor + masking_factor
+            head_importance = torch.from_numpy(np.load(args.output_dir + f"/head_importance_{i-2}.npy")).to(args.device)
+            new_head_mask = torch.from_numpy(np.load(args.output_dir + f"/head_mask_{i-2}.npy"))
+
+        # If masking factor is still less than 0 despite backtracking
+        if masking_factor < 0:
+            print(f"Masking factor still negative. Only pruning 1 head.")
+            masking_factor = 1/144
+
         if i == args.num_epochs:
             break
-        # heads from least important to most - keep only not-masked heads
+
         unpruned_heads = torch.sum(new_head_mask)
-        masking_factor = compute_next_pruning_factor(args, original_score, current_score, masking_factor)
         pruning_percentages.append(masking_factor)
-        num_to_mask = max(1, int(144 * masking_factor))
+        num_to_mask = max(1, round(144 * masking_factor))
+        total_num_heads_pruned.append(144 - unpruned_heads.item() + num_to_mask)
+        num_heads_pruned.append(num_to_mask)
+
         print(
             f"num_to_mask for iter {i} is {num_to_mask}, total pruned already is {144 - unpruned_heads}, ({(144 - unpruned_heads) * 100 / 144}%)")
         print(f"Masking factor is {masking_factor}")
@@ -181,13 +204,11 @@ def mask_heads(args):
             print("Break 1", len(current_heads_to_mask), num_to_mask)
             break
 
-        print(f"Number of heads left: {torch.sum(new_head_mask)}")
+        print(f"Number of heads left: {unpruned_heads - num_to_mask}")
         if torch.sum(new_head_mask) < 5:
             print(f"Only {torch.sum(new_head_mask)} number of heads left causing the algorithm to stop searching.")
             break
 
-        # mask heads
-        # print(f"Current heads to mask {current_heads_to_mask}")
         selected_heads_to_mask = []
         for head in current_heads_to_mask:
             print(head_importance.view(-1)[head.item()])
@@ -209,17 +230,16 @@ def mask_heads(args):
 
         logger.info("Heads to mask: %s", str(selected_heads_to_mask))
 
-        # new_head_mask = new_head_mask.view_as(head_mask)
-        print_2d_tensor(new_head_mask)
-
         # Reinitialize the model and trainer
         model.cpu()
         model, trainer, eval_dataloader = reset_model(args)
+
         # Train the model for 1000 steps (about 33% of the training data).
         head_mask_dict = numpy_to_dict(new_head_mask)
         model.prune_heads(head_mask_dict)
         train_results = trainer.train()
         trainer.log_metrics("train", train_results.metrics)
+
         # load trained model
         model = trainer.model
 
@@ -230,19 +250,30 @@ def mask_heads(args):
     print(output_heatmap_mask)
     print(final_scores)
     print(pruning_percentages)
+    print(num_heads_pruned)
+    print(total_num_heads_pruned)
     np.save(os.path.join(args.output_dir, f"output_heatmap_mask.npy"), output_heatmap_mask)
     final_scores = np.array(final_scores)
     pruning_percentages = np.array(pruning_percentages)
+    num_heads_pruned = np.array(num_heads_pruned)
+    total_num_heads_pruned = np.array(total_num_heads_pruned)
     np.save(os.path.join(args.output_dir, f"final_scores.npy"), final_scores)
     np.save(os.path.join(args.output_dir, f"pruning_percentages.npy"), pruning_percentages)
-    logger.info("Final head mask")
-    print_2d_tensor(head_mask)
+    np.save(os.path.join(args.output_dir, f"num_heads_pruned.npy"), num_heads_pruned)
+    np.save(os.path.join(args.output_dir, f"total_num_heads_pruned.npy"), total_num_heads_pruned)
     np.save(os.path.join(args.output_dir, "head_mask.npy"), head_mask.detach().cpu().numpy())
 
     return head_mask
 
 
 def numpy_to_dict(head_mask):
+    """
+    This method converts the head_mask tensor into a dictionary which is the required format for pruning.
+    :param head_mask: Head mask tensor.
+    :type head_mask: tensor
+    :return: Dictionary of head mask.
+    :rtype: dict
+    """
     out_dict = {}
     for i, layer in enumerate(head_mask):
         heads_to_prune = []
@@ -254,6 +285,15 @@ def numpy_to_dict(head_mask):
 
 
 def compute_score(preds, labels):
+    """
+    This method computes the score of the validation dataset.
+    :param preds: Predicted labels.
+    :type preds: nd.array
+    :param labels: True labels.
+    :type labels: nd.array
+    :return: The percentage of correct predictions.
+    :rtype: float
+    """
     total_count = 0
     correct_count = 0
     for prediction, label in zip(preds, labels):
@@ -265,8 +305,16 @@ def compute_score(preds, labels):
 
 
 def reset_model(args):
+    """
+    This method resets the model to an earlier point in training after each iteration as done in the Lottery Ticket
+    Hypothesis.
+    :param args: Args parser containing arguments.
+    :type args: argparse
+    :return: Model, model trainer and validation dataloader.
+    :rtype: tuple
+    """
     model = ViTForImageClassification.from_pretrained(
-        "starting_checkpoint_" + args.dataset_name + '_' + str(args.iteration_id) + "/checkpoint-100")
+        args.experiment_id + "/starting_checkpoint_" + args.dataset_name + '_' + str(args.iteration_id) + "/checkpoint-100")
 
     trainer = Trainer(model=model, args=args.training_args, data_collator=args.collate_fn,
                       compute_metrics=args.compute_metrics, train_dataset=args.transformed_train_ds,
@@ -280,6 +328,19 @@ def reset_model(args):
 
 
 def compute_next_pruning_factor(args, original_score, current_score, current_pruning_factor):
+    """
+    This method contains the formula for computing the next pruning iteration.
+    :param args: Args parser containing arguments.
+    :type args: argparse
+    :param original_score: The original validation score without any pruning.
+    :type original_score: float
+    :param current_score: The current score with the new pruning.
+    :type current_score: float
+    :param current_pruning_factor: The current pruning factor.
+    :type current_pruning_factor: float
+    :return: The next pruning factor.
+    :rtype: float
+    """
     score_difference = (original_score - current_score)/original_score
     pruning_threshold = 1 - args.pruning_threshold
     # pruning_factor = args.initial_pruning_factor * (pruning_threshold - score_difference)/pruning_threshold
@@ -288,6 +349,9 @@ def compute_next_pruning_factor(args, original_score, current_score, current_pru
 
 
 def main():
+    """
+    This is the main function to run. The parameters for the function can be added to the argument parser.
+    """
     parser = argparse.ArgumentParser()
     parser.add_argument('--dataset_name', type=str, default='cifar100',
                         help='Name of dataset to be loaded from huggingface datasets. Default is cifar100.')
@@ -304,12 +368,18 @@ def main():
                         help='Model name to load when rolling back weights')
     parser.add_argument('--iteration_id', type=str, default='base_run',
                         help='Iteration id to be able to run multiple scripts at the same time and identify.')
+    parser.add_argument('--experiment_id', type=str, default='experiment_1',
+                        help='Experiment id for the experiment we are currently running.')
     args = parser.parse_args()
-    args.output_dir = 'saved_numpys_' + args.iteration_id
+    args.output_dir = os.path.join(args.experiment_id, 'saved_numpys_' + args.iteration_id)
+    # args.output_dir = args.experiment_id + '/saved_numpys_' + args.iteration_id
     # args.num_epochs = int(100/args.initial_masking_factor) + 1
     args.num_epochs = 9
+
+    print(f"This is experiment {args.experiment_id} with iteration id {args.iteration_id}.")
+
     if not os.path.isdir(args.output_dir):
-        os.makedirs('saved_numpys_' + args.iteration_id)
+        os.makedirs(args.output_dir)
 
     no_cuda = False
     local_rank = -1
@@ -319,7 +389,7 @@ def main():
         n_gpu = 0 if no_cuda else torch.cuda.device_count()
     else:
         torch.cuda.set_device(local_rank)
-        device = torch.device("cuda", local_rank)
+        args.device = torch.device("cuda", local_rank)
         n_gpu = 1
         torch.distributed.init_process_group(backend="nccl")  # Initializes the distributed backend
 
@@ -332,15 +402,15 @@ def main():
         feature_extractor = AutoFeatureExtractor.from_pretrained('facebook/deit-base-patch16-224')
 
     train_ds, test_ds = load_dataset(args.dataset_name, split=['train', 'test'])
-    splits = train_ds.train_test_split(test_size=0.1)
+    splits = train_ds.train_test_split(test_size=0.1, shuffle=False)
+
     train_ds = splits['train']
     val_ds = splits['test']
-    print(train_ds.info)
-    print(train_ds.shape)
-
-    print(feature_extractor)
 
     def transform(example_batch):
+        """
+        This method transformers the dataset applying the correct data augmentations to the dataset.
+        """
         # Take a list of PIL images and turn them to pixel values
         if args.dataset_name == 'mnist':
             inputs = feature_extractor([x for x in example_batch['image']], return_tensors='pt')
@@ -365,12 +435,18 @@ def main():
     transformed_val_ds = val_ds.with_transform(transform)
 
     def collate_fn(batch):
+        """
+        This method batches the images and labels.
+        """
         return {'pixel_values': torch.stack([x['pixel_values'] for x in batch]),
                 'labels': torch.tensor([x['labels'] for x in batch])}
 
     metric = load_metric("accuracy")
 
     def compute_metrics(p):
+        """
+        This method is used by the trainer to compute the metrics when validating/testing.
+        """
         return metric.compute(predictions=np.argmax(p.predictions, axis=1), references=p.label_ids)
 
     ## MNIST
@@ -382,7 +458,7 @@ def main():
     ## CIFAR10
     if args.dataset_name == 'cifar10': labels = train_ds.features['label'].names
 
-    training_args = TrainingArguments(output_dir="./starting_checkpoint_" + args.dataset_name + '_' + args.iteration_id,
+    training_args = TrainingArguments(output_dir="./" + args.experiment_id + "/starting_checkpoint_" + args.dataset_name + '_' + args.iteration_id,
                                       per_device_train_batch_size=16, evaluation_strategy="no", max_steps=100,
                                       fp16=True, save_steps=100, eval_steps=100, logging_steps=100, learning_rate=2e-4,
                                       save_total_limit=2, remove_unused_columns=False, push_to_hub=False,
@@ -390,17 +466,10 @@ def main():
                                       log_level='critical', )
 
     # Initial model. Train for 100 steps.
-    # model_config = ViTConfig('facebook/deit-base-patch16-224')
     model = ViTForImageClassification.from_pretrained('facebook/deit-base-patch16-224', num_labels=len(labels),
                                                       id2label={str(i): c for i, c in enumerate(labels)},
-                                                      label2id={c: str(i) for i, c in enumerate(labels)})
-    # config = model.config
-    # config.id2label = {str(i): c for i, c in enumerate(labels)}
-    # config.label2id = {c: str(i) for i, c in enumerate(labels)}
-    # model = ViTForImageClassification(config)
-
-    print(model.config)
-
+                                                      label2id={c: str(i) for i, c in enumerate(labels)},
+                                                      ignore_mismatched_sizes=True)
 
     trainer = Trainer(model=model, args=training_args, data_collator=collate_fn, compute_metrics=compute_metrics,
                       train_dataset=transformed_train_ds, eval_dataset=transformed_val_ds,
@@ -414,7 +483,7 @@ def main():
     model.cpu()
 
     args.training_args = TrainingArguments(
-        output_dir="./pruning_checkpoints_" + args.dataset_name + '_' + args.iteration_id,
+        output_dir="./" + args.experiment_id + "/pruning_checkpoints_" + args.dataset_name + '_' + args.iteration_id,
         per_device_train_batch_size=16, evaluation_strategy="no", max_steps=1000, fp16=True, save_steps=1000,
         eval_steps=1000, logging_steps=100, learning_rate=2e-4, save_total_limit=3, remove_unused_columns=False,
         push_to_hub=False, report_to='tensorboard', load_best_model_at_end=False, disable_tqdm=True,
@@ -429,6 +498,7 @@ def main():
     start_time = time.time()
     head_mask = mask_heads(args)
     print(f"Time taken = {time.time() - start_time}")
+    print(f"This was experiment {args.experiment_id} with iteration id {args.iteration_id}.")
 
     print(head_mask)
 
