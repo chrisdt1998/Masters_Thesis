@@ -106,10 +106,6 @@ def compute_heads_importance(args, model, eval_dataloader, head_mask=None):
                 j_idx += 1
                 row_visited = False
 
-    # Global importance normalization.
-    if not args.dont_normalize_global_importance:
-        head_importance = (head_importance - head_importance.min()) / (
-                head_importance.max() - head_importance.min())
 
     # Layerwise importance normalization.
     if not args.dont_normalize_importance_by_layer:
@@ -117,6 +113,10 @@ def compute_heads_importance(args, model, eval_dataloader, head_mask=None):
         norm_by_layer = torch.pow(torch.pow(head_importance, exponent).sum(-1), 1 / exponent)
         head_importance /= norm_by_layer.unsqueeze(-1) + 1e-20
 
+    # Global importance normalization.
+    if not args.dont_normalize_global_importance:
+        head_importance = (head_importance - head_importance.min()) / (
+                head_importance.max() - head_importance.min())
 
     # Print/save matrices
     np.save(os.path.join(args.output_dir, "head_importance.npy"), head_importance.detach().cpu().numpy())

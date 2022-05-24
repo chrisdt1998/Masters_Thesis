@@ -174,15 +174,43 @@ def cifar100_smart_iter():
 
     plt.show()
 
-#
-# accuracy_attempt7 = np.load('cifar100_fully_trained_test_results/accuracy_attempt7.npy')
-# results_cifar100_attempt7 = np.load('saved_numpys_attempt7_rerun/final_scores.npy') * 100
-# print(accuracy_attempt7[:5])
-# print(results_cifar100_attempt7[:5])
-# first_score = results_cifar100_attempt7[0]
-# print(results_cifar100_attempt7[:5] - first_score)
-# print(abs(results_cifar100_attempt7[:5] - first_score)/first_score)
-# percentages = prune_percentages_arr(12)
-# print(percentages[:5])
+def fix_pruning_percentages(percentages):
+    print(percentages)
+    for i, percent in enumerate(percentages):
+        if percent < 0:
+            percentages[i] = 1/144
+    return percentages
 
-cifar100_smart_iter()
+def normalizing_testing():
+    no_norm = np.load('saved_numpys_deit_no_normalization/final_scores.npy')
+    layer_norm = np.load('saved_numpys_deit_normalize_layers_only/final_scores.npy')
+    global_norm = np.load('saved_numpys_deit_normalize_global_only/final_scores.npy')
+    both_norms = np.load('saved_numpys_deit_both_normalizations/final_scores.npy')
+
+    percentages_no_norm = np.cumsum(np.load('saved_numpys_deit_no_normalization/pruning_percentages.npy'))
+    percentages_layer_norm = np.cumsum(np.load('saved_numpys_deit_normalize_layers_only/pruning_percentages.npy'))
+    percentages_global_norm = np.cumsum(np.load('saved_numpys_deit_normalize_global_only/pruning_percentages.npy'))
+    percentages_both_norm = np.cumsum(np.load('saved_numpys_deit_both_normalizations/pruning_percentages.npy'))
+
+    # print(no_norm)
+    # print(percentages_no_norm)
+    # print(np.load('saved_numpys_deit_no_normalization/pruning_percentages.npy'))
+    # num_heads_pruned = np.load('saved_numpys_deit_no_normalization/num_heads_pruned.npy')
+    # total_num_heads_pruned = np.load('saved_numpys_deit_no_normalization/total_num_heads_pruned.npy')
+    # print(num_heads_pruned)
+    # print(total_num_heads_pruned)
+    # exit(1)
+
+    plt.plot(percentages_no_norm[:9], no_norm, label='No normalization', marker='x')
+    plt.plot(percentages_layer_norm[:9], layer_norm, label='Layer normalization', marker='x')
+    plt.plot(percentages_global_norm[:9], global_norm, label='Global normalization', marker='x')
+    plt.plot(percentages_both_norm[:9], both_norms, label='Both normalization. Layerwise first.', marker='x')
+
+    plt.xlabel('Factor of heads pruned.')
+    plt.ylabel('Validation score.')
+    plt.title('Comparison of the different normalizations.')
+    plt.legend()
+    plt.show()
+
+
+normalizing_testing()

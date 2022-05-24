@@ -5,8 +5,7 @@
     <orderEntry type="jdk" jdkName="Remote Python 3.6.8 (sftp://rs062004@login-g.hpc.itc.rwth-aachen.de:22/usr/bin/python3.6)" jdkType="Python SDK" />
     <orderEntry type="sourceFolder" forTests="false" />
   </component>
-  <component name="PyDocumentationSettings">
-    <option name="format" value="PLAIN" />
-    <option name="myDocStringFormat" value="Plain" />
+  <component name="PackageRequirementsSettings">
+    <option name="requirementsPath" value="" />
   </component>
 </module>
