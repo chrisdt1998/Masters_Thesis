@@ -26,7 +26,8 @@ python3 -m pip install --user numpy
 python3 -m pip install --user argparse
 python3 -m pip install --user torchvision
 python3 -m pip install --user tqdm
-python3 -m pip install --user transformers
+#python3 -m pip install --user transformers
+python3 -m pip install --user -e git+git://github.com/chrisdt1998/transformers.git@main
 python3 -m pip install --user datasets
 python3 -m pip install --user sklearn
 python3 -m pip install --user tensorboardX
@@ -35,7 +36,17 @@ python3 -m pip install --user opendatasets
 
 
 ## Run code
-srun python3 /rwthfs/rz/cluster/home/rs062004/tmp/pycharm_project_109/find_head_mask_smart_deit.py --experiment_id=normalization_experiments --iteration_id=deit_global_first_both_normalizations
-#srun python3 /rwthfs/rz/cluster/home/rs062004/tmp/pycharm_project_109/find_head_mask_smart_deit.py --experiment_id=normalization_experiments --iteration_id=deit_normalize_global_only --dont_normalize_importance_by_layer
-#srun python3 /rwthfs/rz/cluster/home/rs062004/tmp/pycharm_project_109/find_head_mask_smart_deit.py --experiment_id=normalization_experiments --iteration_id=deit_normalize_layers_only --dont_normalize_global_importance
-#srun python3 /rwthfs/rz/cluster/home/rs062004/tmp/pycharm_project_109/find_head_mask_smart_deit.py --experiment_id=normalization_experiments --iteration_id=deit_no_normalization --dont_normalize_global_importance --dont_normalize_importance_by_layer
+#srun python3 /rwthfs/rz/cluster/home/rs062004/tmp/pycharm_project_109/find_head_mask_smart_deit.py --experiment_id=threshold_experiments_mnist_global_pruning --iteration_id=threshold_88 --pruning_threshold=0.88 --dataset_name=mnist --prune_whole_layers
+#srun python3 /rwthfs/rz/cluster/home/rs062004/tmp/pycharm_project_109/find_head_mask_smart_deit.py --experiment_id=threshold_experiments_mnist_global_pruning --iteration_id=threshold_90 --pruning_threshold=0.90 --dataset_name=mnist --prune_whole_layers
+#srun python3 /rwthfs/rz/cluster/home/rs062004/tmp/pycharm_project_109/find_head_mask_smart_deit.py --experiment_id=threshold_experiments_mnist_global_pruning --iteration_id=threshold_92 --pruning_threshold=0.92 --dataset_name=mnist --prune_whole_layers
+#srun python3 /rwthfs/rz/cluster/home/rs062004/tmp/pycharm_project_109/find_head_mask_smart_deit.py --experiment_id=threshold_experiments_mnist_global_pruning --iteration_id=threshold_94 --pruning_threshold=0.94 --dataset_name=mnist --prune_whole_layers
+#srun python3 /rwthfs/rz/cluster/home/rs062004/tmp/pycharm_project_109/find_head_mask_smart_deit.py --experiment_id=threshold_experiments_mnist_global_pruning --iteration_id=threshold_96 --pruning_threshold=0.96 --dataset_name=mnist --prune_whole_layers
+#srun python3 /rwthfs/rz/cluster/home/rs062004/tmp/pycharm_project_109/find_head_mask_smart_deit.py --experiment_id=threshold_experiments_mnist_global_pruning --iteration_id=threshold_98 --pruning_threshold=0.98 --dataset_name=mnist --prune_whole_layers
+#srun python3 /rwthfs/rz/cluster/home/rs062004/tmp/pycharm_project_109/find_head_mask_smart_deit.py --experiment_id=threshold_experiments_mnist_global_pruning --iteration_id=threshold_99 --pruning_threshold=0.99 --dataset_name=mnist --prune_whole_layers
+#srun python3 /rwthfs/rz/cluster/home/rs062004/tmp/pycharm_project_109/find_head_mask_smart_deit.py --experiment_id=threshold_experiments_mnist_global_pruning --iteration_id=threshold_999 --pruning_threshold=0.999 --dataset_name=mnist --prune_whole_layers
+
+#srun python3 /rwthfs/rz/cluster/home/rs062004/tmp/pycharm_project_109/full_train_with_masks.py --dataset_name cifar10 --experiment_id threshold_experiments_cifar10_global_pruning --iteration_id None threshold_88 threshold_90 threshold_92 threshold_94 threshold_96 threshold_98 threshold_99 threshold_999
+#srun python3 /rwthfs/rz/cluster/home/rs062004/tmp/pycharm_project_109/full_train_with_masks.py --experiment_id threshold_experiments_cifar100 --iteration_id None
+
+#srun python3 /rwthfs/rz/cluster/home/rs062004/tmp/pycharm_project_109/find_head_mask_smart_deit.py --experiment_id=threshold_experiments_mnist_test --iteration_id=threshold_88 --pruning_threshold=0.88 --dataset_name=mnist --prune_whole_layers
+srun python3 /rwthfs/rz/cluster/home/rs062004/tmp/pycharm_project_109/one_train_masks.py --experiment_id=no_training_test --iteration_id=threshold_88 --pruning_threshold=0.88 --dataset_name=mnist --prune_whole_layers --initial_pruning_factor=0.2

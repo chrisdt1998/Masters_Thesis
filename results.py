@@ -5,7 +5,11 @@ This file was created by and designed by Christopher du Toit.
 """
 
 import matplotlib.pyplot as plt
+import matplotlib
 import numpy as np
+
+# matplotlib.use('TkAgg')
+plt.rcParams["figure.figsize"] = (11, 7)
 
 def head_mask_3_results():
     results = [0.8782, 0.8484, 0.8368, 0.8116, 0.7142, 0.3514, 0.2026, 0.1616, 0.1264]
@@ -48,10 +52,6 @@ def produce_heat_map(arr, title):
     ax.set_ylabel("Layer number")
     fig.tight_layout()
     plt.show()
-
-def produce_line_plot(results_list, title, legend):
-    pass
-
 
 
 def head_mask_2_iter_mnist():
@@ -185,12 +185,14 @@ def normalizing_testing():
     no_norm = np.load('saved_numpys_deit_no_normalization/final_scores.npy')
     layer_norm = np.load('saved_numpys_deit_normalize_layers_only/final_scores.npy')
     global_norm = np.load('saved_numpys_deit_normalize_global_only/final_scores.npy')
-    both_norms = np.load('saved_numpys_deit_both_normalizations/final_scores.npy')
+    both_norms_layer_first = np.load('saved_numpys_deit_both_normalizations/final_scores.npy')
+    both_norms_global_first = np.load('saved_numpys_deit_global_first_both_normalizations/final_scores.npy')
 
     percentages_no_norm = np.cumsum(np.load('saved_numpys_deit_no_normalization/pruning_percentages.npy'))
     percentages_layer_norm = np.cumsum(np.load('saved_numpys_deit_normalize_layers_only/pruning_percentages.npy'))
     percentages_global_norm = np.cumsum(np.load('saved_numpys_deit_normalize_global_only/pruning_percentages.npy'))
-    percentages_both_norm = np.cumsum(np.load('saved_numpys_deit_both_normalizations/pruning_percentages.npy'))
+    percentages_both_norm_layer_first = np.cumsum(np.load('saved_numpys_deit_both_normalizations/pruning_percentages.npy'))
+    percentages_both_norm_global_first = np.cumsum(np.load('saved_numpys_deit_global_first_both_normalizations/pruning_percentages.npy'))
 
     # print(no_norm)
     # print(percentages_no_norm)
@@ -204,7 +206,9 @@ def normalizing_testing():
     plt.plot(percentages_no_norm[:9], no_norm, label='No normalization', marker='x')
     plt.plot(percentages_layer_norm[:9], layer_norm, label='Layer normalization', marker='x')
     plt.plot(percentages_global_norm[:9], global_norm, label='Global normalization', marker='x')
-    plt.plot(percentages_both_norm[:9], both_norms, label='Both normalization. Layerwise first.', marker='x')
+    plt.plot(percentages_both_norm_layer_first[:9], both_norms_layer_first, label='Both, layer first.', marker='x')
+    plt.plot(percentages_both_norm_global_first, both_norms_global_first,
+             label='Both, global first.', marker='x')
 
     plt.xlabel('Factor of heads pruned.')
     plt.ylabel('Validation score.')
@@ -213,4 +217,237 @@ def normalizing_testing():
     plt.show()
 
 
-normalizing_testing()
+def experiments_threshold_cifar100():
+    plt.clf()
+    thresholds = np.array([0.88, 0.90, 0.92, 0.94, 0.96, 0.98, 0.99, 0.999]) * 100
+    validation_scores = np.array([0.7312, 0.7484, 0.7686, 0.788, 0.802, 0.8142, 0.83, 0.8252]) * 100
+    num_heads_pruned = np.array([101, 100, 92, 92, 76, 60, 19, 45])
+    percentage_pruned = (num_heads_pruned/144) * 100
+    fully_trained_scores = np.array([0.8318, 0.83, 0.8496, 0.8517, 0.8543, 0.8601, 0.866, 0.865]) * 100
+    plt.plot(0, 87.06, marker='x', label='Unpruned')
+    plt.annotate(87.06, (0, 87.06), textcoords="offset points", xytext=(0, -15), ha='center')
+    difference_scores = fully_trained_scores - 87.06
+
+    plt.plot(percentage_pruned, validation_scores, marker='x', label='Val')
+    plt.plot(percentage_pruned, fully_trained_scores, marker='x', label='Full')
+    for i, (x, y) in enumerate(zip(percentage_pruned, validation_scores)):
+        label = "{:.1f}".format(thresholds[i])
+
+        plt.annotate(label,  # this is the text
+                     (x, y),  # these are the coordinates to position the label
+                     textcoords="offset points",  # how to position the text
+                     xytext=(0, 10),  # distance from text to points (x,y)
+                     ha='center')  # horizontal alignment can be left, right or center
+
+
+    for i, (x, y) in enumerate(zip(percentage_pruned, fully_trained_scores)):
+        label = "{:.1f}".format(thresholds[i])
+        label_diff = "{:.1f}".format(difference_scores[i])
+
+        plt.annotate(label,  # this is the text
+                     (x, y),  # these are the coordinates to position the label
+                     textcoords="offset points",  # how to position the text
+                     xytext=(0, 10),  # distance from text to points (x,y)
+                     ha='center')  # horizontal alignment can be left, right or center
+        plt.annotate(label_diff,  # this is the text
+                     (x, y),  # these are the coordinates to position the label
+                     textcoords="offset points",  # how to position the text
+                     xytext=(0, -15),  # distance from text to points (x,y)
+                     ha='center')  # horizontal alignment can be left, right or center
+
+    plt.title("Experiment: Pruning thresholds for cifar100")
+    plt.xlabel("Percentage of heads pruned.")
+    plt.ylabel("Accuracy")
+    plt.legend()
+    plt.show()
+
+
+def experiments_threshold_cifar10_limited():
+    plt.clf()
+    thresholds = np.array([0.88, 0.90, 0.92, 0.94, 0.96, 0.98, 0.99, 0.999]) * 100
+    validation_scores = np.array([0.8544, 0.8808, 0.8868, 0.9226, 0.927, 0.9458, 0.9566, 0.9642]) * 100
+    num_heads_pruned = np.array([129, 129, 124, 115, 110, 94, 71, 33])
+    percentage_pruned = (num_heads_pruned/144) * 100
+    fully_trained_scores = np.array([0.8841, 0.9185, 0.9362, 0.9498, 0.9526, 0.9545, 0.9624, 0.9681]) * 100
+    unpruned_score = 96.94
+    plt.plot(0, unpruned_score, marker='x', label='Unpruned')
+    plt.annotate(unpruned_score, (0, unpruned_score), textcoords="offset points", xytext=(0, -15), ha='center')
+    difference_scores = fully_trained_scores - unpruned_score
+
+    plt.plot(percentage_pruned, validation_scores, marker='x', label='Val')
+    plt.plot(percentage_pruned, fully_trained_scores, marker='x', label='Full')
+    for i, (x, y) in enumerate(zip(percentage_pruned, validation_scores)):
+        label = "{:.1f}".format(thresholds[i])
+
+        plt.annotate(label,  # this is the text
+                     (x, y),  # these are the coordinates to position the label
+                     textcoords="offset points",  # how to position the text
+                     xytext=(0, 10),  # distance from text to points (x,y)
+                     ha='center')  # horizontal alignment can be left, right or center
+
+
+    for i, (x, y) in enumerate(zip(percentage_pruned, fully_trained_scores)):
+        label = "{:.1f}".format(thresholds[i])
+        label_diff = "{:.1f}".format(difference_scores[i])
+
+        plt.annotate(label,  # this is the text
+                     (x, y),  # these are the coordinates to position the label
+                     textcoords="offset points",  # how to position the text
+                     xytext=(0, 10),  # distance from text to points (x,y)
+                     ha='center')  # horizontal alignment can be left, right or center
+        plt.annotate(label_diff,  # this is the text
+                     (x, y),  # these are the coordinates to position the label
+                     textcoords="offset points",  # how to position the text
+                     xytext=(0, -15),  # distance from text to points (x,y)
+                     ha='center')  # horizontal alignment can be left, right or center
+
+    plt.title("Experiment: Pruning thresholds for cifar10 limited")
+    plt.xlabel("Percentage of heads pruned.")
+    plt.ylabel("Accuracy")
+    plt.legend()
+    plt.show()
+
+
+def experiments_threshold_cifar10_global_pruning():
+    plt.clf()
+    thresholds = np.array([0.88, 0.90, 0.92, 0.94, 0.96, 0.98, 0.99, 0.999]) * 100
+    validation_scores = np.array([0.841, 0.8618, 0.875, 0.9224, 0.9396, 0.9498, 0.9586, 0.9634]) * 100
+    num_heads_pruned = np.array([127, 127, 124, 115, 112, 86, 79, 16])
+    percentage_pruned = (num_heads_pruned/144) * 100
+    fully_trained_scores = np.array([0.8955, 0.8895, 0.918, 0.9238, 0.9529, 0.9635, 0.9666, 0.9709]) * 100
+    unpruned_score = 96.94
+    plt.plot(0, unpruned_score, marker='x', label='Unpruned')
+    plt.annotate(unpruned_score, (0, unpruned_score), textcoords="offset points", xytext=(0, -15), ha='center')
+    difference_scores = fully_trained_scores - unpruned_score
+
+    plt.plot(percentage_pruned, validation_scores, marker='x', label='Val')
+    plt.plot(percentage_pruned, fully_trained_scores, marker='x', label='Full')
+    for i, (x, y) in enumerate(zip(percentage_pruned, validation_scores)):
+        label = "{:.1f}".format(thresholds[i])
+
+        plt.annotate(label,  # this is the text
+                     (x, y),  # these are the coordinates to position the label
+                     textcoords="offset points",  # how to position the text
+                     xytext=(0, 10),  # distance from text to points (x,y)
+                     ha='center')  # horizontal alignment can be left, right or center
+
+
+    for i, (x, y) in enumerate(zip(percentage_pruned, fully_trained_scores)):
+        label = "{:.1f}".format(thresholds[i])
+        label_diff = "{:.1f}".format(difference_scores[i])
+
+        plt.annotate(label,  # this is the text
+                     (x, y),  # these are the coordinates to position the label
+                     textcoords="offset points",  # how to position the text
+                     xytext=(0, 10),  # distance from text to points (x,y)
+                     ha='center')  # horizontal alignment can be left, right or center
+        plt.annotate(label_diff,  # this is the text
+                     (x, y),  # these are the coordinates to position the label
+                     textcoords="offset points",  # how to position the text
+                     xytext=(0, -15),  # distance from text to points (x,y)
+                     ha='center')  # horizontal alignment can be left, right or center
+
+    plt.title("Experiment: Pruning thresholds for cifar10")
+    plt.xlabel("Percentage of heads pruned.")
+    plt.ylabel("Accuracy")
+    plt.legend()
+    plt.show()
+
+def experiments_threshold_mnist_limited():
+    plt.clf()
+    thresholds = np.array([0.88, 0.90, 0.92, 0.94, 0.96, 0.98, 0.99, 0.999]) * 100
+    validation_scores = np.array([0.9921, 0.9922, 0.9925, 0.992, 0.9896, 0.992, 0.9905, 0.9948]) * 100
+    num_heads_pruned = np.array([132, 132, 132, 132, 132, 132, 132.0, 90])
+    percentage_pruned = (num_heads_pruned/144) * 100
+    fully_trained_scores = np.array([0.995, 0.9956, 0.9954, 0.9948, 0.9953, 0.9955, 0.9943, 0.9964]) * 100
+    unpruned_score = 99.40
+    plt.plot(100, unpruned_score, marker='x', label='Unpruned')
+    plt.annotate('Unpruned', (100, unpruned_score), textcoords="offset points", xytext=(0, 10), ha='center')
+    plt.annotate(unpruned_score, (100, unpruned_score), textcoords="offset points", xytext=(0, -15), ha='center')
+    difference_scores = fully_trained_scores - unpruned_score
+
+    plt.plot(thresholds, validation_scores, marker='x', label='Val')
+    plt.plot(thresholds, fully_trained_scores, marker='x', label='Full')
+    for i, (x, y) in enumerate(zip(thresholds, validation_scores)):
+        label = "{:.1f}".format(percentage_pruned[i])
+
+        plt.annotate(label,  # this is the text
+                     (x, y),  # these are the coordinates to position the label
+                     textcoords="offset points",  # how to position the text
+                     xytext=(0, 10),  # distance from text to points (x,y)
+                     ha='center')  # horizontal alignment can be left, right or center
+
+
+    for i, (x, y) in enumerate(zip(thresholds, fully_trained_scores)):
+        label = "{:.1f}".format(percentage_pruned[i])
+        label_diff = "{:.1f}".format(difference_scores[i])
+
+        plt.annotate(label,  # this is the text
+                     (x, y),  # these are the coordinates to position the label
+                     textcoords="offset points",  # how to position the text
+                     xytext=(0, 10),  # distance from text to points (x,y)
+                     ha='center')  # horizontal alignment can be left, right or center
+        plt.annotate(label_diff,  # this is the text
+                     (x, y),  # these are the coordinates to position the label
+                     textcoords="offset points",  # how to position the text
+                     xytext=(0, -15),  # distance from text to points (x,y)
+                     ha='center')  # horizontal alignment can be left, right or center
+
+    plt.title("Experiment: Pruning thresholds for mnist limited")
+    plt.xlabel("Threshold values.")
+    plt.ylabel("Accuracy")
+    plt.legend()
+    plt.show()
+
+
+def experiments_threshold_mnist_global_pruning():
+    plt.clf()
+    thresholds = np.array([0.88, 0.90, 0.92, 0.94, 0.96, 0.98, 0.99, 0.999]) * 100
+    validation_scores = np.array([0.9531, 0.9605, 0.9592, 0.9577, 0.9873, 0.9616, 0.9903, 0.9688]) * 100
+    num_heads_pruned = np.array([143, 143, 143, 143, 133, 143, 128, 142])
+    percentage_pruned = (num_heads_pruned/144) * 100
+    fully_trained_scores = np.array([0.9919, 0.9906, 0.9919, 0.9917, 0.994, 0.992, 0.9963, 0.9921]) * 100
+    unpruned_score = 99.40
+    plt.plot(100, unpruned_score, marker='x', label='Unpruned')
+    plt.annotate('Unpruned', (100, unpruned_score), textcoords="offset points", xytext=(0, 10), ha='center')
+    plt.annotate(unpruned_score, (100, unpruned_score), textcoords="offset points", xytext=(0, -15), ha='center')
+    difference_scores = fully_trained_scores - unpruned_score
+
+    plt.plot(thresholds, validation_scores, marker='x', label='Val')
+    plt.plot(thresholds, fully_trained_scores, marker='x', label='Full')
+    for i, (x, y) in enumerate(zip(thresholds, validation_scores)):
+        label = "{:.1f}".format(percentage_pruned[i])
+
+        plt.annotate(label,  # this is the text
+                     (x, y),  # these are the coordinates to position the label
+                     textcoords="offset points",  # how to position the text
+                     xytext=(0, 10),  # distance from text to points (x,y)
+                     ha='center')  # horizontal alignment can be left, right or center
+
+
+    for i, (x, y) in enumerate(zip(thresholds, fully_trained_scores)):
+        label = "{:.1f}".format(percentage_pruned[i])
+        label_diff = "{:.1f}".format(difference_scores[i])
+
+        plt.annotate(label,  # this is the text
+                     (x, y),  # these are the coordinates to position the label
+                     textcoords="offset points",  # how to position the text
+                     xytext=(0, 10),  # distance from text to points (x,y)
+                     ha='center')  # horizontal alignment can be left, right or center
+        plt.annotate(label_diff,  # this is the text
+                     (x, y),  # these are the coordinates to position the label
+                     textcoords="offset points",  # how to position the text
+                     xytext=(0, -15),  # distance from text to points (x,y)
+                     ha='center')  # horizontal alignment can be left, right or center
+
+    plt.title("Experiment: Pruning thresholds for mnist")
+    plt.xlabel("Threshold values.")
+    plt.ylabel("Accuracy")
+    plt.legend()
+    plt.show()
+
+
+experiments_threshold_mnist_limited()
+# experiments_threshold_mnist_global_pruning()
+# experiments_threshold_cifar10_global_pruning()
+# experiments_threshold_cifar10_limited()

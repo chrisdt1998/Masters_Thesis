@@ -9,12 +9,14 @@ import logging
 import os
 import argparse
 import time
+import sys
 
 import numpy as np
 from tqdm import tqdm
 import torch
 
-from transformers import ViTModel, ViTConfig, ViTForImageClassification, AutoFeatureExtractor, Trainer, TrainingArguments, AutoConfig
+sys.path.append(r"C:\Users\Gebruiker\Documents\GitHub\transformers\src")
+from transformers import ViTModel, ViTConfig, ViTForImageClassification, AutoFeatureExtractor, Trainer, TrainingArguments
 from datasets import load_dataset, load_metric
 
 logger = logging.getLogger(__name__)
@@ -135,20 +137,9 @@ def mask_heads(args):
     # Initialize the model and trainer
     model, trainer, eval_dataloader = reset_model(args)
 
-    # Train the model for 1000 steps (about 33% of the training data).
-    train_results = trainer.train()
-    trainer.log_metrics("train", train_results.metrics)
-
-    # load trained model
-    model = trainer.model
-
     head_importance, preds, labels = compute_heads_importance(args, model, eval_dataloader)
-    original_score = compute_score(preds, labels)
-    current_score = original_score
-    print(f"Starting score {original_score}")
     new_head_mask = torch.ones_like(head_importance)
     i = 0
-    final_scores = []
     pruning_percentages = [0, ]
     num_heads_pruned = [0, ]
     total_num_heads_pruned = [0, ]
@@ -159,27 +150,10 @@ def mask_heads(args):
         if not args.dont_save_mask_all_iterations:
             np.save(os.path.join(args.output_dir, f"head_mask_{i}.npy"), head_mask.detach().cpu().numpy())
             np.save(os.path.join(args.output_dir, f"head_importance_{i}.npy"), head_importance.detach().cpu().numpy())
-            final_scores.append(current_score)
-            print(f"Iteration {i} score: {current_score}")
             print(f"Iteration {i} head mask: \n {head_mask}")
             print(f"Iteration {i} head importance: \n {head_importance}")
         i += 1
         # heads from least important to most - keep only not-masked heads
-        masking_factor = compute_next_pruning_factor(args, original_score, current_score, masking_factor)
-        masking_factor = min(masking_factor, args.initial_pruning_factor)
-
-        # If masking factor is less than 0, this means that we should backtrack
-        if masking_factor < 0:
-            print(f"Masking factor, {masking_factor} is less than 0, therefore we need to backtrack.")
-            previous_masking_factor = pruning_percentages[-1]
-            masking_factor = previous_masking_factor + masking_factor
-            head_importance = torch.from_numpy(np.load(args.output_dir + f"/head_importance_{i-2}.npy")).to(args.device)
-            new_head_mask = torch.from_numpy(np.load(args.output_dir + f"/head_mask_{i-2}.npy"))
-
-        # If masking factor is still less than 0 despite backtracking
-        if masking_factor < 0:
-            print(f"Masking factor still negative. Only pruning 1 head.")
-            masking_factor = 1/144
 
         if i == args.num_epochs:
             break
@@ -224,6 +198,9 @@ def mask_heads(args):
             if len(selected_heads_to_mask) == num_to_mask or head_importance.view(-1)[head.item()] == float("Inf"):
                 print("Break 2", len(selected_heads_to_mask), num_to_mask)
                 break
+            if head_importance.view(-1)[head.item()] > args.pruning_threshold:
+                print(f"breaking: No more values below args.pruning_threshold")
+                break
             layer_idx = head.item() // 12
             head_idx = head.item() % 12
             if not args.prune_whole_layers:
@@ -249,30 +226,20 @@ def mask_heads(args):
         model.cpu()
         model, trainer, eval_dataloader = reset_model(args)
 
-        # Train the model for 1000 steps (about 33% of the training data).
         head_mask_dict = numpy_to_dict(new_head_mask)
         model.prune_heads(head_mask_dict)
-        train_results = trainer.train()
-        trainer.log_metrics("train", train_results.metrics)
-
-        # load trained model
-        model = trainer.model
 
         # Compute metric and head importance again
         head_importance, preds, labels = compute_heads_importance(args, model, eval_dataloader, head_mask=new_head_mask)
-        current_score = compute_score(preds, labels)
 
     print(output_heatmap_mask)
-    print(final_scores)
     print(pruning_percentages)
     print(num_heads_pruned)
     print(total_num_heads_pruned)
     np.save(os.path.join(args.output_dir, f"output_heatmap_mask.npy"), output_heatmap_mask)
-    final_scores = np.array(final_scores)
     pruning_percentages = np.array(pruning_percentages)
     num_heads_pruned = np.array(num_heads_pruned)
     total_num_heads_pruned = np.array(total_num_heads_pruned)
-    np.save(os.path.join(args.output_dir, f"final_scores.npy"), final_scores)
     np.save(os.path.join(args.output_dir, f"pruning_percentages.npy"), pruning_percentages)
     np.save(os.path.join(args.output_dir, f"num_heads_pruned.npy"), num_heads_pruned)
     np.save(os.path.join(args.output_dir, f"total_num_heads_pruned.npy"), total_num_heads_pruned)
@@ -328,8 +295,11 @@ def reset_model(args):
     :return: Model, model trainer and validation dataloader.
     :rtype: tuple
     """
-    model = ViTForImageClassification.from_pretrained(
-        args.experiment_id + "/starting_checkpoint_" + args.dataset_name + "/checkpoint-100")
+    # Initial model. Train for 100 steps.
+    model = ViTForImageClassification.from_pretrained('facebook/deit-base-patch16-224', num_labels=len(args.labels),
+                                                      id2label={str(i): c for i, c in enumerate(args.labels)},
+                                                      label2id={c: str(i) for i, c in enumerate(args.labels)},
+                                                      ignore_mismatched_sizes=True)
 
     trainer = Trainer(model=model, args=args.training_args, data_collator=args.collate_fn,
                       compute_metrics=args.compute_metrics, train_dataset=args.transformed_train_ds,
@@ -340,27 +310,6 @@ def reset_model(args):
     # Distributed and parallel training
     model.to(args.device)
     return model, trainer, processed_val_ds
-
-
-def compute_next_pruning_factor(args, original_score, current_score, current_pruning_factor):
-    """
-    This method contains the formula for computing the next pruning iteration.
-    :param args: Args parser containing arguments.
-    :type args: argparse
-    :param original_score: The original validation score without any pruning.
-    :type original_score: float
-    :param current_score: The current score with the new pruning.
-    :type current_score: float
-    :param current_pruning_factor: The current pruning factor.
-    :type current_pruning_factor: float
-    :return: The next pruning factor.
-    :rtype: float
-    """
-    score_difference = (original_score - current_score)/original_score
-    pruning_threshold = 1 - args.pruning_threshold
-    # pruning_factor = args.initial_pruning_factor * (pruning_threshold - score_difference)/pruning_threshold
-    pruning_factor = current_pruning_factor * (pruning_threshold - score_difference) / pruning_threshold
-    return pruning_factor
 
 
 def main():
@@ -375,8 +324,8 @@ def main():
     parser.add_argument('--dont_save_mask_all_iterations', action='store_true',
                         help='Call this to not save mask each iteration.')
     parser.add_argument('--initial_pruning_factor', type=float, default=0.2, help='Prune pruning_factor*remaining weights')
-    parser.add_argument('--pruning_threshold', type=float, default=0.92,
-                        help='Factor of the original validation accuracy that the next validation accuracy should not go below.')
+    parser.add_argument('--pruning_threshold', type=float, default=0.8,
+                        help='Value for which the head importance value should not be below.')
     parser.add_argument('--dont_normalize_importance_by_layer', action='store_true')
     parser.add_argument('--dont_normalize_global_importance', action='store_true')
     parser.add_argument('--model_name', default='starting_checkpoint/checkpoint-100',
@@ -467,47 +416,21 @@ def main():
         return metric.compute(predictions=np.argmax(p.predictions, axis=1), references=p.label_ids)
 
     ## MNIST
-    if args.dataset_name == 'mnist': labels = train_ds.features['label'].names
+    if args.dataset_name == 'mnist': args.labels = train_ds.features['label'].names
 
     ## CIFAR100
-    if args.dataset_name == 'cifar100': labels = train_ds.features['fine_label'].names
+    if args.dataset_name == 'cifar100': args.labels = train_ds.features['fine_label'].names
 
     ## CIFAR10
-    if args.dataset_name == 'cifar10': labels = train_ds.features['label'].names
-
-    if not os.path.isdir("./" + args.experiment_id + "/starting_checkpoint_" + args.dataset_name):
-        print(f"Starting checkpoint does not exist. Creating one now.")
-
-        training_args = TrainingArguments(output_dir="./" + args.experiment_id + "/starting_checkpoint_" + args.dataset_name,
-                                          per_device_train_batch_size=16, evaluation_strategy="no", max_steps=100,
-                                          fp16=True, save_steps=100, eval_steps=100, logging_steps=100, learning_rate=2e-4,
-                                          save_total_limit=2, remove_unused_columns=False, push_to_hub=False,
-                                          report_to='tensorboard', load_best_model_at_end=False, disable_tqdm=True,
-                                          log_level='critical', )
-
-        # Initial model. Train for 100 steps.
-        model = ViTForImageClassification.from_pretrained('facebook/deit-base-patch16-224', num_labels=len(labels),
-                                                          id2label={str(i): c for i, c in enumerate(labels)},
-                                                          label2id={c: str(i) for i, c in enumerate(labels)},
-                                                          ignore_mismatched_sizes=True)
-
-        trainer = Trainer(model=model, args=training_args, data_collator=collate_fn, compute_metrics=compute_metrics,
-                          train_dataset=transformed_train_ds, eval_dataset=transformed_val_ds,
-                          tokenizer=feature_extractor, )
-
-        # Distributed and parallel training
-        model.to(args.device)
-        train_results = trainer.train()
-        trainer.log_metrics("train", train_results.metrics)
-
-        model.cpu()
+    if args.dataset_name == 'cifar10': args.labels = train_ds.features['label'].names
 
     args.training_args = TrainingArguments(
-        output_dir="./" + args.experiment_id + "/pruning_checkpoints_" + args.dataset_name + '_' + args.iteration_id,
+        output_dir="./" + args.experiment_id + "/starting_checkpoint_" + args.dataset_name,
         per_device_train_batch_size=16, evaluation_strategy="no", max_steps=1000, fp16=True, save_steps=1000,
         eval_steps=1000, logging_steps=100, learning_rate=2e-4, save_total_limit=3, remove_unused_columns=False,
         push_to_hub=False, report_to='tensorboard', load_best_model_at_end=False, disable_tqdm=True,
         log_level='critical', )
+
 
     args.collate_fn = collate_fn
     args.compute_metrics = compute_metrics

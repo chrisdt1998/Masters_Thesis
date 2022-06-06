@@ -9,12 +9,14 @@ import logging
 import os
 import argparse
 import time
+import sys
 
 import numpy as np
 from tqdm import tqdm
 import torch
 
-from transformers import ViTModel, ViTConfig, ViTForImageClassification, AutoFeatureExtractor, Trainer, TrainingArguments, AutoConfig
+sys.path.append(r"C:\Users\Gebruiker\Documents\GitHub\transformers\src")
+from transformers import ViTModel, ViTConfig, ViTForImageClassification, AutoFeatureExtractor, Trainer, TrainingArguments
 from datasets import load_dataset, load_metric
 
 logger = logging.getLogger(__name__)
@@ -135,13 +137,6 @@ def mask_heads(args):
     # Initialize the model and trainer
     model, trainer, eval_dataloader = reset_model(args)
 
-    # Train the model for 1000 steps (about 33% of the training data).
-    train_results = trainer.train()
-    trainer.log_metrics("train", train_results.metrics)
-
-    # load trained model
-    model = trainer.model
-
     head_importance, preds, labels = compute_heads_importance(args, model, eval_dataloader)
     original_score = compute_score(preds, labels)
     current_score = original_score
@@ -165,6 +160,7 @@ def mask_heads(args):
             print(f"Iteration {i} head importance: \n {head_importance}")
         i += 1
         # heads from least important to most - keep only not-masked heads
+        # TODO: add an interative pruning factor.
         masking_factor = compute_next_pruning_factor(args, original_score, current_score, masking_factor)
         masking_factor = min(masking_factor, args.initial_pruning_factor)
 
@@ -252,11 +248,6 @@ def mask_heads(args):
         # Train the model for 1000 steps (about 33% of the training data).
         head_mask_dict = numpy_to_dict(new_head_mask)
         model.prune_heads(head_mask_dict)
-        train_results = trainer.train()
-        trainer.log_metrics("train", train_results.metrics)
-
-        # load trained model
-        model = trainer.model
 
         # Compute metric and head importance again
         head_importance, preds, labels = compute_heads_importance(args, model, eval_dataloader, head_mask=new_head_mask)
@@ -329,7 +320,7 @@ def reset_model(args):
     :rtype: tuple
     """
     model = ViTForImageClassification.from_pretrained(
-        args.experiment_id + "/starting_checkpoint_" + args.dataset_name + "/checkpoint-100")
+        args.experiment_id + "/starting_checkpoint_" + args.dataset_name + "/checkpoint-1000")
 
     trainer = Trainer(model=model, args=args.training_args, data_collator=args.collate_fn,
                       compute_metrics=args.compute_metrics, train_dataset=args.transformed_train_ds,
@@ -475,15 +466,15 @@ def main():
     ## CIFAR10
     if args.dataset_name == 'cifar10': labels = train_ds.features['label'].names
 
+    args.training_args = TrainingArguments(
+        output_dir="./" + args.experiment_id + "/starting_checkpoint_" + args.dataset_name,
+        per_device_train_batch_size=16, evaluation_strategy="no", max_steps=1000, fp16=True, save_steps=1000,
+        eval_steps=1000, logging_steps=100, learning_rate=2e-4, save_total_limit=3, remove_unused_columns=False,
+        push_to_hub=False, report_to='tensorboard', load_best_model_at_end=False, disable_tqdm=True,
+        log_level='critical', )
+
     if not os.path.isdir("./" + args.experiment_id + "/starting_checkpoint_" + args.dataset_name):
         print(f"Starting checkpoint does not exist. Creating one now.")
-
-        training_args = TrainingArguments(output_dir="./" + args.experiment_id + "/starting_checkpoint_" + args.dataset_name,
-                                          per_device_train_batch_size=16, evaluation_strategy="no", max_steps=100,
-                                          fp16=True, save_steps=100, eval_steps=100, logging_steps=100, learning_rate=2e-4,
-                                          save_total_limit=2, remove_unused_columns=False, push_to_hub=False,
-                                          report_to='tensorboard', load_best_model_at_end=False, disable_tqdm=True,
-                                          log_level='critical', )
 
         # Initial model. Train for 100 steps.
         model = ViTForImageClassification.from_pretrained('facebook/deit-base-patch16-224', num_labels=len(labels),
@@ -491,7 +482,7 @@ def main():
                                                           label2id={c: str(i) for i, c in enumerate(labels)},
                                                           ignore_mismatched_sizes=True)
 
-        trainer = Trainer(model=model, args=training_args, data_collator=collate_fn, compute_metrics=compute_metrics,
+        trainer = Trainer(model=model, args=args.training_args, data_collator=collate_fn, compute_metrics=compute_metrics,
                           train_dataset=transformed_train_ds, eval_dataset=transformed_val_ds,
                           tokenizer=feature_extractor, )
 
@@ -502,12 +493,6 @@ def main():
 
         model.cpu()
 
-    args.training_args = TrainingArguments(
-        output_dir="./" + args.experiment_id + "/pruning_checkpoints_" + args.dataset_name + '_' + args.iteration_id,
-        per_device_train_batch_size=16, evaluation_strategy="no", max_steps=1000, fp16=True, save_steps=1000,
-        eval_steps=1000, logging_steps=100, learning_rate=2e-4, save_total_limit=3, remove_unused_columns=False,
-        push_to_hub=False, report_to='tensorboard', load_best_model_at_end=False, disable_tqdm=True,
-        log_level='critical', )
 
     args.collate_fn = collate_fn
     args.compute_metrics = compute_metrics
