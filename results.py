@@ -8,8 +8,9 @@ import matplotlib.pyplot as plt
 import matplotlib
 import numpy as np
 
-# matplotlib.use('TkAgg')
-plt.rcParams["figure.figsize"] = (11, 7)
+matplotlib.use('TkAgg')
+print(plt.rcParams["figure.figsize"])
+plt.rcParams["figure.figsize"] = (8, 6)
 
 def head_mask_3_results():
     results = [0.8782, 0.8484, 0.8368, 0.8116, 0.7142, 0.3514, 0.2026, 0.1616, 0.1264]
@@ -328,7 +329,7 @@ def experiments_threshold_cifar10_global_pruning():
         plt.annotate(label,  # this is the text
                      (x, y),  # these are the coordinates to position the label
                      textcoords="offset points",  # how to position the text
-                     xytext=(0, 10),  # distance from text to points (x,y)
+                     xytext=(0, -15),  # distance from text to points (x,y)
                      ha='center')  # horizontal alignment can be left, right or center
 
 
@@ -447,7 +448,7 @@ def experiments_threshold_mnist_global_pruning():
     plt.show()
 
 
-experiments_threshold_mnist_limited()
+# experiments_threshold_mnist_limited()
 # experiments_threshold_mnist_global_pruning()
-# experiments_threshold_cifar10_global_pruning()
+experiments_threshold_cifar10_global_pruning()
 # experiments_threshold_cifar10_limited()
