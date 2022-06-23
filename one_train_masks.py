@@ -1,6 +1,5 @@
 """
-This file contains masking head technique for ViT based on the LTH but by using attn * grad_attn. This is approach
-differs because it uses an algorithm to decide what the next pruning percentage should be based on the validation loss.
+This file contains masking head technique for ViT based on the LTH but by using the One Train deviant method.
 
 This file was created by and designed by Christopher du Toit.
 """
@@ -57,6 +56,8 @@ def compute_heads_importance(args, model, eval_dataloader, head_mask=None):
     labels = None
 
     # Iterate through the evaluation data
+    total_attn_maps = []
+    total_attn_grad = []
     for step, batch in enumerate(tqdm(eval_dataloader, desc="Iteration", disable=True)):
         input_ids = batch['pixel_values'].to(args.device)
         label_ids = batch['labels'].to(args.device)
@@ -66,25 +67,24 @@ def compute_heads_importance(args, model, eval_dataloader, head_mask=None):
         loss, logits, attentions = (outputs.loss, outputs.logits, outputs.attentions)  # Loss and logits
 
         for attention_map in attentions:
-            attention_map.retain_grad()
+            if attention_map is not None:
+                attention_map.retain_grad()
         loss.backward()
-        attention_grads = [attention_map.grad for attention_map in attentions]
+        attention_grads = [attention_map.grad if attention_map is not None else None for attention_map in attentions]
 
-        all_heads_sensitivity = []
-        for layer, layer_grad in zip(attentions, attention_grads):
-            head_sensitivity = torch.zeros(layer.shape[1])
-            tot_tokens = layer.shape[0]
-            heads = layer.sum(dim=0)
-            heads_grad = layer_grad.sum(dim=0)
-            for idx, (head, head_grad) in enumerate(zip(heads, heads_grad)):
-                head_sensitivity[idx] = (head * head_grad).abs().sum().detach().cpu() / (197 * 197)
+        if len(total_attn_maps) == 0:
+            total_attn_maps = list(attentions)
+            total_attn_grad = list(attention_grads)
 
-            all_heads_sensitivity.append(head_sensitivity / tot_tokens)
-
+        for layer_idx, (layer, layer_grad) in enumerate(zip(attentions, attention_grads)):
+            if layer is not None:
+                total_attn_maps[layer_idx] += layer
+                total_attn_grad[layer_idx] += layer_grad
 
         for attention_map, attention_grad_map in zip(attentions, attention_grads):
-            attention_map.detach().cpu()
-            attention_grad_map.detach().cpu()
+            if attention_map is not None:
+                attention_map.detach().cpu()
+                attention_grad_map.detach().cpu()
 
         # Also store our logits/labels if we want to compute metrics afterwards
         if preds is None:
@@ -94,17 +94,16 @@ def compute_heads_importance(args, model, eval_dataloader, head_mask=None):
             preds = np.append(preds, logits.detach().cpu().numpy(), axis=0)
             labels = np.append(labels, label_ids.detach().cpu().numpy(), axis=0)
 
-        # add attention heads to head_importance by simply taking the sum. The different indexes are to account for the
-        # pruning of the heads.
-
-        j_idx = 0
-        for layer_idx in range(n_layers):
-            i_idx = 0
+    j_idx = 0
+    for layer_idx in range(n_layers):
+        i_idx = 0
+        if total_attn_maps[j_idx] is not None:
+            x = (total_attn_maps[j_idx] * total_attn_grad[j_idx]).sum(dim=0).abs()
             for head_idx in range(n_heads):
                 if head_mask[layer_idx][head_idx] == 1:
-                    head_importance[layer_idx][head_idx] += all_heads_sensitivity[j_idx][i_idx]
+                    head_importance[layer_idx][head_idx] = x[i_idx].sum().detach().cpu() / (197 * 197 * 8)
                     i_idx += 1
-            j_idx += 1
+        j_idx += 1
 
     # Global importance normalization.
     if not args.dont_normalize_global_importance:
@@ -160,22 +159,27 @@ def mask_heads(args):
             print(f"Iteration {i} head importance: \n {head_importance}")
         i += 1
         # heads from least important to most - keep only not-masked heads
-        # TODO: add an interative pruning factor.
-        masking_factor = compute_next_pruning_factor(args, original_score, current_score, masking_factor)
+        masking_factor = compute_next_pruning_factor(args, original_score, current_score)
         masking_factor = min(masking_factor, args.initial_pruning_factor)
 
         # If masking factor is less than 0, this means that we should backtrack
         if masking_factor < 0:
             print(f"Masking factor, {masking_factor} is less than 0, therefore we need to backtrack.")
+            if num_heads_pruned[-1] == 1:
+                print(f"Number of heads pruned in the last iteration was 1 so we stop the search.")
+                break
+
             previous_masking_factor = pruning_percentages[-1]
             masking_factor = previous_masking_factor + masking_factor
             head_importance = torch.from_numpy(np.load(args.output_dir + f"/head_importance_{i-2}.npy")).to(args.device)
             new_head_mask = torch.from_numpy(np.load(args.output_dir + f"/head_mask_{i-2}.npy"))
 
-        # If masking factor is still less than 0 despite backtracking
-        if masking_factor < 0:
-            print(f"Masking factor still negative. Only pruning 1 head.")
-            masking_factor = 1/144
+            # If masking factor is still less than 0 despite backtracking
+            if masking_factor < 0:
+                print(f"Masking factor still negative. Changing pruning factor to 0.5 of the initial factor.")
+                args.initial_pruning_factor = args.initial_pruning_factor * 0.5
+                masking_factor = compute_next_pruning_factor(args, original_score, final_scores[-2])
+                masking_factor = min(masking_factor, args.initial_pruning_factor)
 
         if i == args.num_epochs:
             break
@@ -193,10 +197,10 @@ def mask_heads(args):
         # Here we choose whether or not to prune whole layers. Pruning whole layers requires pruning the corresponding
         # MLPs too.
         if not args.prune_whole_layers:
-            for layer_idx, layer in enumerate(head_mask):
+            for layer_idx, layer in enumerate(new_head_mask):
                 if torch.sum(layer) == 1:
                     head_importance[layer_idx] = float("Inf")
-        head_importance[head_mask == 0.0] = float("Inf")
+        head_importance[new_head_mask == 0.0] = float("Inf")
 
 
         current_heads_to_mask = head_importance.view(-1).sort()[1]
@@ -258,6 +262,7 @@ def mask_heads(args):
     print(pruning_percentages)
     print(num_heads_pruned)
     print(total_num_heads_pruned)
+    final_head_mask = choose_correct_head_mask(args, final_scores)
     np.save(os.path.join(args.output_dir, f"output_heatmap_mask.npy"), output_heatmap_mask)
     final_scores = np.array(final_scores)
     pruning_percentages = np.array(pruning_percentages)
@@ -267,9 +272,9 @@ def mask_heads(args):
     np.save(os.path.join(args.output_dir, f"pruning_percentages.npy"), pruning_percentages)
     np.save(os.path.join(args.output_dir, f"num_heads_pruned.npy"), num_heads_pruned)
     np.save(os.path.join(args.output_dir, f"total_num_heads_pruned.npy"), total_num_heads_pruned)
-    np.save(os.path.join(args.output_dir, "head_mask.npy"), head_mask.detach().cpu().numpy())
+    np.save(os.path.join(args.output_dir, "head_mask.npy"), final_head_mask)
 
-    return head_mask
+    return final_head_mask
 
 
 def numpy_to_dict(head_mask):
@@ -333,7 +338,7 @@ def reset_model(args):
     return model, trainer, processed_val_ds
 
 
-def compute_next_pruning_factor(args, original_score, current_score, current_pruning_factor):
+def compute_next_pruning_factor(args, original_score, current_score):
     """
     This method contains the formula for computing the next pruning iteration.
     :param args: Args parser containing arguments.
@@ -350,8 +355,15 @@ def compute_next_pruning_factor(args, original_score, current_score, current_pru
     score_difference = (original_score - current_score)/original_score
     pruning_threshold = 1 - args.pruning_threshold
     # pruning_factor = args.initial_pruning_factor * (pruning_threshold - score_difference)/pruning_threshold
-    pruning_factor = current_pruning_factor * (pruning_threshold - score_difference) / pruning_threshold
+    pruning_factor = args.initial_pruning_factor * (pruning_threshold - score_difference) / pruning_threshold
     return pruning_factor
+
+def choose_correct_head_mask(args, final_scores):
+    for i, score in reversed(list(enumerate(final_scores))):
+        if score >= args.pruning_threshold * final_scores[0]:
+            head_mask = np.load(os.path.join(args.output_dir, f"head_mask_{i}.npy"))
+            print(f"Chosen headmask is from iteration {i} with score {score}")
+            return head_mask
 
 
 def main():
@@ -380,8 +392,6 @@ def main():
                         help='Call this if we want to be able to prune whole layers and the corresponding MLPs (TBD).')
     args = parser.parse_args()
     args.output_dir = os.path.join(args.experiment_id, 'saved_numpys_' + args.iteration_id)
-    # args.output_dir = args.experiment_id + '/saved_numpys_' + args.iteration_id
-    # args.num_epochs = int(100/args.initial_masking_factor) + 1
     args.num_epochs = 9
 
     print(f"This is experiment {args.experiment_id} with iteration id {args.iteration_id}.")

@@ -1,0 +1,11 @@
+torch
+numpy
+argparse
+torchvision
+tqdm
+-e git+git://github.com/chrisdt1998/transformers.git@main
+datasets
+sklearn
+tensorboardX
+matplotlib
+opendatasets

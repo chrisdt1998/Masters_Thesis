@@ -1,10 +1,20 @@
-from transformers import ViTForImageClassification, ViTFeatureExtractor, Trainer, TrainingArguments, PretrainedConfig
-from datasets import load_dataset, load_metric
+"""
+This file contains the code for training multiple models using the mask loaded. The intention of the file was for the
+experiments.
+
+This file was created by and designed by Christopher du Toit.
+"""
+
 import torch
 import numpy as np
 import argparse
 
 import os
+import sys
+sys.path.append(r"C:\Users\Gebruiker\Documents\GitHub\transformers\src")
+from transformers import ViTForImageClassification, ViTFeatureExtractor, Trainer, TrainingArguments, PretrainedConfig
+from datasets import load_dataset, load_metric
+
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--dataset_name', type=str, default='cifar100',
@@ -17,8 +27,7 @@ parser.add_argument('--experiment_id', type=str, default='experiment_1',
                     help='Experiment id for the experiment we are currently running.')
 args = parser.parse_args()
 
-
-args.model_name = args.experiment_id + "/starting_checkpoint_" + args.dataset_name + '/checkpoint-100'
+args.model_name = 'facebook/deit-base-patch16-224'
 
 available_gpus = [torch.cuda.get_device_properties(torch.cuda.device(i)) for i in range(torch.cuda.device_count())]
 device_ids = [i for i in range(torch.cuda.device_count())]
@@ -114,12 +123,6 @@ if args.dataset_name == 'cifar10': labels = train_ds.features['label'].names
 
 
 for iteration_id in args.iteration_id:
-    # model = ViTForImageClassification.from_pretrained(
-    #     args.model_name,
-    #     num_labels=len(labels),
-    #     id2label={str(i): c for i, c in enumerate(labels)},
-    #     label2id={c: str(i) for i, c in enumerate(labels)},
-    # )
     model = ViTForImageClassification.from_pretrained(args.model_name)
 
     if iteration_id != 'None':
@@ -143,9 +146,9 @@ for iteration_id in args.iteration_id:
       evaluation_strategy="steps",
       num_train_epochs=4,
       fp16=True,
-      save_steps=1000,
-      eval_steps=1000,
-      logging_steps=100,
+      save_steps=5000,
+      eval_steps=5000,
+      logging_steps=500,
       learning_rate=2e-4,
       save_total_limit=2,
       remove_unused_columns=False,
